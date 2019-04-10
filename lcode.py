@@ -49,6 +49,11 @@ ELECTRON_MASS = 1
 
 # Grouping GPU arrays, with optional transparent RAM<->GPU copying #
 
+class Arrays:
+    def __init__(self, **kwargs):
+        for name, array in kwargs.items():
+            setattr(self, name, array)
+
 class GPUArrays:
     """
     A convenient way to group several GPU arrays and access them with a dot.
@@ -117,19 +122,6 @@ class GPUArraysView:
 
 # Solving Laplace equation with Dirichlet boundary conditions (Ez) #
 
-def dst2d(a):
-    """
-    Calculate DST-Type1-2D, jury-rigged from anti-symmetrically-padded rFFT.
-    """
-    assert a.shape[0] == a.shape[1]
-    N = a.shape[0]
-
-    a = a.get()
-    b = scipy.fftpack.dstn(a, type=1)
-    return cp.asarray(b)
-
-
-@cp.memoize()
 def dirichlet_matrix(grid_steps, grid_step_size):
     """
     Calculate a magical matrix that solves the Laplace equation
@@ -138,14 +130,14 @@ def dirichlet_matrix(grid_steps, grid_step_size):
     """
     # mul[i, j] = 1 / (lam[i] + lam[j])
     # lam[k] = 4 / h**2 * sin(k * pi * h / (2 * L))**2, where L = h * (N - 1)
-    k = cp.arange(1, grid_steps - 1)
-    lam = 4 / grid_step_size**2 * cp.sin(k * cp.pi / (2 * (grid_steps - 1)))**2
+    k = np.arange(1, grid_steps - 1)
+    lam = 4 / grid_step_size**2 * np.sin(k * np.pi / (2 * (grid_steps - 1)))**2
     lambda_i, lambda_j = lam[:, None], lam[None, :]
     mul = 1 / (lambda_i + lambda_j)
     return mul / (2 * (grid_steps - 1))**2  # additional 2xDST normalization
 
 
-def calculate_Ez(config, jx, jy):
+def calculate_Ez(config, const_ram, jx, jy):
     """
     Calculate Ez as iDST2D(dirichlet_matrix * DST2D(djx/dx + djy/dy)).
     """
@@ -157,21 +149,20 @@ def calculate_Ez(config, jx, jy):
 
     # 1. Apply DST-Type1-2D (Discrete Sine Transform Type 1 2D) to the RHS.
     rhs_inner = rhs_inner.get()
-    f = cp.asarray(scipy.fftpack.dstn(rhs_inner, type=1))
+    f = scipy.fftpack.dstn(rhs_inner, type=1)
 
     # 2. Multiply f by the special matrix that does the job and normalizes.
-    f *= dirichlet_matrix(config.grid_steps, config.grid_step_size)
+    f *= const_ram.dirichlet_matrix
 
     # 3. Apply iDST-Type1-2D (Inverse Discrete Sine Transform Type 1 2D).
     #    We don't have to define a separate iDST function, because
     #    unnormalized DST-Type1 is its own inverse, up to a factor 2(N+1)
     #    and we take all scaling matters into account with a single factor
     #    hidden inside dirichlet_matrix.
-    f = f.get()
-    Ez_inner = cp.asarray(scipy.fftpack.dstn(f, type=1))
-    Ez = cp.pad(Ez_inner, 1, 'constant', constant_values=0)
-    numba.cuda.synchronize()
-    return Ez
+    
+    Ez_inner = scipy.fftpack.dstn(f, type=1)
+    Ez = np.pad(Ez_inner, 1, 'constant', constant_values=0)
+    return cp.asarray(Ez)
 
 
 # Solving Laplace or Helmholtz equation with mixed boundary conditions #
@@ -824,7 +815,7 @@ def move_smart(config,
 
 # The scheme of a single step in xi #
 
-def step(config, const, virt_params, prev, beam_ro):
+def step(config, const, const_ram, virt_params, prev, beam_ro):
     """
     Calculate the next iteration of plasma evolution and response.
     Returns the new state with the following attributes:
@@ -865,7 +856,7 @@ def step(config, const, virt_params, prev, beam_ro):
         Ex, Ey = 2 * Ex - prev.Ex, 2 * Ey - prev.Ey
         Bx, By = 2 * Bx - prev.Bx, 2 * By - prev.By
 
-    Ez = calculate_Ez(config, jx, jy)
+    Ez = calculate_Ez(config, const_ram, jx, jy)
     Bz = calculate_Bz(config, jx, jy)
 
     Ex_avg = (Ex + prev.Ex) / 2
@@ -895,7 +886,7 @@ def step(config, const, virt_params, prev, beam_ro):
         Ex, Ey = 2 * Ex - prev.Ex, 2 * Ey - prev.Ey
         Bx, By = 2 * Bx - prev.Bx, 2 * By - prev.By
 
-    Ez = calculate_Ez(config, jx, jy)
+    Ez = calculate_Ez(config, const_ram, jx, jy)
     Bz = calculate_Bz(config, jx, jy)
 
     Ex_avg = (Ex + prev.Ex) / 2
@@ -958,6 +949,9 @@ def init(config):
 
     const = GPUArrays(m=m, q=q, x_init=x_init, y_init=y_init,
                       ro_initial=ro_initial)
+    
+    dir_mat = dirichlet_matrix(config.grid_steps, config.grid_step_size)
+    const_ram = Arrays(dirichlet_matrix=dir_mat)
 
     def zeros():
         return cp.zeros((config.grid_steps, config.grid_steps))
@@ -967,7 +961,7 @@ def init(config):
                       Bx=zeros(), By=zeros(), Bz=zeros(),
                       ro=zeros(), jx=zeros(), jy=zeros(), jz=zeros())
 
-    return xs, ys, const, virt_params, state
+    return xs, ys, const, const_ram, virt_params, state
 
 
 # Some really sloppy diagnostics #
@@ -1028,13 +1022,13 @@ def main():
     import config
     with cp.cuda.Device(config.gpu_index):
 
-        xs, ys, const, virt_params, state = init(config)
+        xs, ys, const, const_ram, virt_params, state = init(config)
         Ez_00_history = []
 
         for xi_i in range(config.xi_steps):
             beam_ro = config.beam(xi_i, xs, ys)
 
-            state = step(config, const, virt_params, state, beam_ro)
+            state = step(config, const, const_ram, virt_params, state, beam_ro)
             view_state = GPUArraysView(state)
 
             ez = view_state.Ez[config.grid_steps // 2, config.grid_steps // 2]
