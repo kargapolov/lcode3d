@@ -143,12 +143,13 @@ def calculate_Ez(config, const_ram, jx, jy):
     """
     # 0. Calculate RHS (NOTE: it is smaller by 1 on each side).
     # NOTE: use gradient instead if available (cupy doesn't have gradient yet).
+    jx, jy = jx.get(), jy.get()
+
     djx_dx = jx[2:, 1:-1] - jx[:-2, 1:-1]
     djy_dy = jy[1:-1, 2:] - jy[1:-1, :-2]
     rhs_inner = -(djx_dx + djy_dy) / (config.grid_step_size * 2)  # -?
 
     # 1. Apply DST-Type1-2D (Discrete Sine Transform Type 1 2D) to the RHS.
-    rhs_inner = rhs_inner.get()
     f = scipy.fftpack.dstn(rhs_inner, type=1)
 
     # 2. Multiply f by the special matrix that does the job and normalizes.
