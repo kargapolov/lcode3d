@@ -32,6 +32,7 @@ import cupy as cp
 
 import scipy.ndimage
 import scipy.signal
+import scipy.fftpack
 
 
 # Prevent all CPU cores waiting for the GPU at 100% utilization (under conda).
@@ -122,18 +123,10 @@ def dst2d(a):
     """
     assert a.shape[0] == a.shape[1]
     N = a.shape[0]
-    #                                    / 0  0  0  0  0  0 \
-    #  0  0  0  0                       |  0 /1  2\ 0 -2 -1  |
-    #  0 /1  2\ 0   anti-symmetrically  |  0 \3  4/ 0 -4 -3  |
-    #  0 \3  4/ 0       padded to       |  0  0  0  0  0  0  |
-    #  0  0  0  0                       |  0 -3 -4  0 +4 +3  |
-    #                                    \ 0 -1 -2  0 +2 +1 /
-    p = cp.zeros((2 * N + 2, 2 * N + 2))
-    p[1:N+1, 1:N+1], p[1:N+1, N+2:] = a,             -cp.fliplr(a)
-    p[N+2:,  1:N+1], p[N+2:,  N+2:] = -cp.flipud(a), +cp.fliplr(cp.flipud(a))
 
-    # after padding: rFFT-2D, cut out the top-left segment, take -real part
-    return -cp.fft.rfft2(p)[1:N+1, 1:N+1].real
+    a = a.get()
+    b = scipy.fftpack.dstn(a, type=1)
+    return cp.asarray(b)
 
 
 @cp.memoize()
@@ -163,7 +156,8 @@ def calculate_Ez(config, jx, jy):
     rhs_inner = -(djx_dx + djy_dy) / (config.grid_step_size * 2)  # -?
 
     # 1. Apply DST-Type1-2D (Discrete Sine Transform Type 1 2D) to the RHS.
-    f = dst2d(rhs_inner)
+    rhs_inner = rhs_inner.get()
+    f = cp.asarray(scipy.fftpack.dstn(rhs_inner, type=1))
 
     # 2. Multiply f by the special matrix that does the job and normalizes.
     f *= dirichlet_matrix(config.grid_steps, config.grid_step_size)
@@ -173,7 +167,8 @@ def calculate_Ez(config, jx, jy):
     #    unnormalized DST-Type1 is its own inverse, up to a factor 2(N+1)
     #    and we take all scaling matters into account with a single factor
     #    hidden inside dirichlet_matrix.
-    Ez_inner = dst2d(f)
+    f = f.get()
+    Ez_inner = cp.asarray(scipy.fftpack.dstn(f, type=1))
     Ez = cp.pad(Ez_inner, 1, 'constant', constant_values=0)
     numba.cuda.synchronize()
     return Ez
