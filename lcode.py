@@ -194,7 +194,6 @@ def mix2d(a):
     return -cp.fft.rfft2(p)[:M+2, :N].imag  # FFT, cut a corner with 0s, -imag
 
 
-@cp.memoize()
 def mixed_matrix(grid_steps, grid_step_size, subtraction_trick):
     """
     Calculate a magical matrix that solves the Helmholtz or Laplace equation
@@ -205,13 +204,14 @@ def mixed_matrix(grid_steps, grid_step_size, subtraction_trick):
     # mul[i, j] = 1 / (lam[i] + lam[j])
     # lam[k] = 4 / h**2 * sin(k * pi * h / (2 * L))**2, where L = h * (N - 1)
     # but k for lam_i spans from 1..N-2, while k for lam_j covers 0..N-1
-    ki, kj = cp.arange(1, grid_steps - 1), cp.arange(grid_steps)
-    li = 4 / grid_step_size**2 * cp.sin(ki * cp.pi / (2 * (grid_steps - 1)))**2
-    lj = 4 / grid_step_size**2 * cp.sin(kj * cp.pi / (2 * (grid_steps - 1)))**2
+    ki, kj = np.arange(1, grid_steps - 1), np.arange(grid_steps)
+    li = 4 / grid_step_size**2 * np.sin(ki * np.pi / (2 * (grid_steps - 1)))**2
+    lj = 4 / grid_step_size**2 * np.sin(kj * np.pi / (2 * (grid_steps - 1)))**2
     lambda_i, lambda_j = li[:, None], lj[None, :]
     mul = 1 / (lambda_i + lambda_j + (1 if subtraction_trick else 0))
-    return mul / (2 * (grid_steps - 1))**2  # additional 2xDST normalization
-
+    return cp.asarray(mul) / (2 * (grid_steps - 1))**2  
+    # return additional 2xDST normalization
+    
 
 def dx_dy(arr, grid_step_size):
     """
@@ -219,9 +219,11 @@ def dx_dy(arr, grid_step_size):
     NOTE: use gradient instead if available (cupy doesn't have gradient yet).
     NOTE: arrays are assumed to have zeros on the perimeter.
     """
-    dx, dy = cp.zeros_like(arr), cp.zeros_like(arr)
+    arr = arr.get()
+    dx, dy = np.zeros_like(arr), np.zeros_like(arr)
     dx[1:-1, 1:-1] = arr[2:, 1:-1] - arr[:-2, 1:-1]  # arrays have 0s
     dy[1:-1, 1:-1] = arr[1:-1, 2:] - arr[1:-1, :-2]  # on the perimeter
+    dx, dy = cp.asarray(dx), cp.asarray(dy)
     return dx / (grid_step_size * 2), dy / (grid_step_size * 2)
 
 
@@ -354,8 +356,12 @@ def move_estimate_wo_fields(config,
     Move coarse plasma particles as if there were no fields.
     Also reflect the particles from `+-reflect_boundary`.
     """
+    m, x_init, y_init = m.get(), x_init.get(), y_init.get()
+    prev_x_offt, prev_y_offt = prev_x_offt.get(), prev_y_offt.get()
+    px, py, pz = px.get(), py.get(), pz.get()
+
     x, y = x_init + prev_x_offt, y_init + prev_y_offt
-    gamma_m = cp.sqrt(m**2 + pz**2 + px**2 + py**2)
+    gamma_m = np.sqrt(m**2 + pz**2 + px**2 + py**2)
 
     x += px / (gamma_m - pz) * config.xi_step_size
     y += py / (gamma_m - pz) * config.xi_step_size
@@ -368,8 +374,7 @@ def move_estimate_wo_fields(config,
 
     x_offt, y_offt = x - x_init, y - y_init
 
-    numba.cuda.synchronize()
-    return x_offt, y_offt
+    return cp.asarray(x_offt), cp.asarray(y_offt)
 
 
 # Deposition and interpolation helper functions #
