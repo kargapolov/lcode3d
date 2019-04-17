@@ -352,7 +352,6 @@ def move_estimate_wo_fields(config,
     Move coarse plasma particles as if there were no fields.
     Also reflect the particles from `+-reflect_boundary`.
     """
-    m, x_init, y_init = m.get(), x_init.get(), y_init.get()
     prev_x_offt, prev_y_offt = prev_x_offt.get(), prev_y_offt.get()
     px, py, pz = px.get(), py.get(), pz.get()
 
@@ -429,6 +428,21 @@ def deposit9(a, i, j, val, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM):
     numba.cuda.atomic.add(a, (i - 1, j - 1), val * wMM)
     numba.cuda.atomic.add(a, (i + 0, j - 1), val * w0M)
     numba.cuda.atomic.add(a, (i + 1, j - 1), val * wPM)
+
+@numba.jit(inline=True)
+def deposit9_cpu(a, i, j, val, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM):
+    """
+    Deposit value into a cell and 8 surrounding cells (using `weights` output).
+    """
+    a[i - 1, j + 1] += val * wMP
+    a[i + 0, j + 1] += val * w0P
+    a[i + 1, j + 1] += val * wPP
+    a[i - 1, j + 0] += val * wM0
+    a[i + 0, j + 0] += val * w00
+    a[i + 1, j + 0] += val * wP0
+    a[i - 1, j - 1] += val * wMM
+    a[i + 0, j - 1] += val * w0M
+    a[i + 1, j - 1] += val * wPM
 
 
 # Coarse and fine plasma initialization #
@@ -661,6 +675,11 @@ def deposit(config, ro_initial, x_offt, y_offt, m, q, px, py, pz, virt_params):
     charge density and current grids.
     This is a convenience wrapper around the `deposit_kernel` CUDA kernel.
     """
+    #ro_initial, x_offt, y_offt = ro_initial.get(), x_offt.get(), y_offt.get()
+    #m, q = m.get(), q.get()
+    #px, py, pz = px.get(), py.get(), pz.get()
+    #virt_params = virt_params.get()
+
     virtplasma_smallness_factor = 1 / (config.plasma_coarseness *
                                        config.plasma_fineness)**2
     ro = cp.zeros((config.grid_steps, config.grid_steps))
@@ -678,6 +697,7 @@ def deposit(config, ro_initial, x_offt, y_offt, m, q, px, py, pz, virt_params):
     # Also add the background ion charge density.
     ro += ro_initial  # Do it last to preserve more float precision
     numba.cuda.synchronize()
+    #return cp.asarray(ro), cp.asarray(jx), cp.asarray(jy), cp.asarray(jz)
     return ro, jx, jy, jz
 
 
@@ -828,8 +848,8 @@ def step(config, const, const_ram, virt_params, prev, beam_ro):
 
     # Estimate the midpoint particle position without knowing the fields yet
     # TODO: use regular pusher and pass zero fields? previous fields?
-    x_offt, y_offt = move_estimate_wo_fields(config, const.m,
-                                             const.x_init, const.y_init,
+    x_offt, y_offt = move_estimate_wo_fields(config, const_ram.m,
+                                             const_ram.x_init, const_ram.y_init,
                                              prev.x_offt, prev.y_offt,
                                              prev.px, prev.py, prev.pz)
 
@@ -953,7 +973,12 @@ def init(config):
                       ro_initial=ro_initial)
     
     dir_mat = dirichlet_matrix(config.grid_steps, config.grid_step_size)
-    const_ram = Arrays(dirichlet_matrix=dir_mat)
+    m_cpu, q_cpu = m.get(), q.get()
+    x_init_cpu, y_init_cpu = x_init.get(), y_init.get()
+    ro_init_cpu = ro_initial.get()
+    const_ram = Arrays(m=m_cpu, q=q_cpu,
+                       x_init=x_init_cpu, y_init=y_init_cpu, 
+                       ro_initial=ro_init_cpu, dirichlet_matrix=dir_mat)
 
     def zeros():
         return cp.zeros((config.grid_steps, config.grid_steps))
