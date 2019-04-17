@@ -174,12 +174,11 @@ def mix2d(a):
     (DST in first direction, DCT in second one).
     """
     # NOTE: LCODE 3D uses x as the first direction, thus the confision below.
-    a = a.get()
     a_dst     = scipy.fftpack.dst(a,     type=1, axis=0)
     a_dst_dct = scipy.fftpack.dct(a_dst, type=1, axis=1)
     # add zeros in top and bottom
     a_out = np.pad(a_dst_dct, ((1,1),(0,0)), 'constant', constant_values=0)
-    return cp.asarray(a_out)
+    return a_out
 
 
 def mixed_matrix(grid_steps, grid_step_size, subtraction_trick):
@@ -197,7 +196,7 @@ def mixed_matrix(grid_steps, grid_step_size, subtraction_trick):
     lj = 4 / grid_step_size**2 * np.sin(kj * np.pi / (2 * (grid_steps - 1)))**2
     lambda_i, lambda_j = li[:, None], lj[None, :]
     mul = 1 / (lambda_i + lambda_j + (1 if subtraction_trick else 0))
-    return cp.asarray(mul) / (2 * (grid_steps - 1))**2  
+    return mul / (2 * (grid_steps - 1))**2  
     # return additional 2xDST normalization
     
 
@@ -207,11 +206,9 @@ def dx_dy(arr, grid_step_size):
     NOTE: use gradient instead if available (cupy doesn't have gradient yet).
     NOTE: arrays are assumed to have zeros on the perimeter.
     """
-    arr = arr.get()
     dx, dy = np.zeros_like(arr), np.zeros_like(arr)
     dx[1:-1, 1:-1] = arr[2:, 1:-1] - arr[:-2, 1:-1]  # arrays have 0s
     dy[1:-1, 1:-1] = arr[1:-1, 2:] - arr[1:-1, :-2]  # on the perimeter
-    dx, dy = cp.asarray(dx), cp.asarray(dy)
     return dx / (grid_step_size * 2), dy / (grid_step_size * 2)
 
 
@@ -225,7 +222,15 @@ def calculate_Ex_Ey_Bx_By(config, Ex_avg, Ey_avg, Bx_avg, By_avg,
            must be closer to the center than the simulation window boundary
            minus the coarse plasma particle cloud width).
     """
-    # 0. Calculate gradients and RHS.
+    # 0. Get arrays of fields and etc. from GPU
+    Ex_avg, Ey_avg = Ex_avg.get(), Ey_avg.get()
+    Bx_avg, By_avg = Bx_avg.get(), By_avg.get()
+
+    beam_ro, ro = beam_ro.get(), ro.get()
+    jx, jy, jz = jx.get(), jy.get(), jz.get()
+    jx_prev, jy_prev = jx_prev.get(), jy_prev.get()
+
+    # 1. Calculate gradients and RHS.
     dro_dx, dro_dy = dx_dy(ro + beam_ro, config.grid_step_size)
     djz_dx, djz_dy = dx_dy(jz + beam_ro, config.grid_step_size)
     djx_dxi = (jx_prev - jx) / config.xi_step_size  # - ?
@@ -242,21 +247,24 @@ def calculate_Ex_Ey_Bx_By(config, Ex_avg, Ey_avg, Bx_avg, By_avg,
     # rhs[:, 0] -= bound_bottom[:] * (2 / grid_step_size)
     # rhs[:, -1] += bound_top[:] * (2 / grid_step_size)
 
-    # 1. Apply our mixed DCT-DST transform to RHS.
+    # 2. Apply our mixed DCT-DST transform to RHS.
     Ey_f = mix2d(Ey_rhs[1:-1, :])[1:-1, :]
 
-    # 2. Multiply f by the magic matrix.
+    # 3. Multiply f by the magic matrix.
     mix_mat = mixed_matrix(config.grid_steps, config.grid_step_size,
                            config.field_solver_subtraction_trick)
     Ey_f *= mix_mat
 
-    # 3. Apply our mixed DCT-DST transform again.
+    # 4. Apply our mixed DCT-DST transform again.
     Ey = mix2d(Ey_f)
 
     # Likewise for other fields:
     Bx = mix2d(mix_mat * mix2d(Bx_rhs[1:-1, :])[1:-1, :])
     By = mix2d(mix_mat * mix2d(By_rhs.T[1:-1, :])[1:-1, :]).T
     Ex = mix2d(mix_mat * mix2d(Ex_rhs.T[1:-1, :])[1:-1, :]).T
+
+    Ex, Ey = cp.asarray(Ex), cp.asarray(Ey) 
+    Bx, By = cp.asarray(Bx), cp.asarray(By)
 
     return Ex, Ey, Bx, By
 
