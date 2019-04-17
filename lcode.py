@@ -193,28 +193,6 @@ def calculate_Ex_Ey_Bx_By(config, Ex_avg, Ey_avg, Bx_avg, By_avg,
 
 # Solving Laplace equation with Neumann boundary conditions (Bz) #
 
-def dct2d(a):
-    """
-    Calculate DCT-Type1-2D, jury-rigged from symmetrically-padded rFFT.
-    """
-    assert a.shape[0] == a.shape[1]
-    N = a.shape[0]
-    #                                    //1  2  3  4\ 3  2 \
-    # /1  2  3  4\                      | |5  6  7  8| 7  6  |
-    # |5  6  7  8|     symmetrically    | |9  A  B  C| B  A  |
-    # |9  A  B  C|      padded to       | \D  E  F  G/ F  E  |
-    # \D  E  F  G/                      |  9  A  B  C  B  A  |
-    #                                    \ 5  6  7  8  7  6 /
-    p = cp.zeros((2 * N - 2, 2 * N - 2))
-    p[:N, :N] = a
-    p[N:, :N] = cp.flipud(a)[1:-1, :]  # flip to right on drawing above
-    p[:N, N:] = cp.fliplr(a)[:, 1:-1]  # flip down on drawing above
-    p[N:, N:] = cp.flipud(cp.fliplr(a))[1:-1, 1:-1]  # bottom-right corner
-    # after padding: rFFT-2D, cut out the top-left segment, take -real part
-    return -cp.fft.rfft2(p)[:N, :N].real
-
-
-@cp.memoize()
 def neumann_matrix(grid_steps, grid_step_size):
     """
     Calculate a magical matrix that solves the Laplace equation
@@ -223,13 +201,16 @@ def neumann_matrix(grid_steps, grid_step_size):
     """
     # mul[i, j] = 1 / (lam[i] + lam[j])
     # lam[k] = 4 / h**2 * sin(k * pi * h / (2 * L))**2, where L = h * (N - 1)
-    k = cp.arange(0, grid_steps)
-    lam = 4 / grid_step_size**2 * cp.sin(k * cp.pi / (2 * (grid_steps - 1)))**2
+
+    k = np.arange(0, grid_steps)
+    lam = 4 / grid_step_size**2 * np.sin(k * np.pi / (2 * (grid_steps - 1)))**2
     lambda_i, lambda_j = lam[:, None], lam[None, :]
     mul = 1 / (lambda_i + lambda_j)  # WARNING: zero division in mul[0, 0]!
     mul[0, 0] = 0  # doesn't matter anyway, just defines constant shift
     return mul / (2 * (grid_steps - 1))**2  # additional 2xDST normalization
 
+
+# Pushing particles without any fields (used for initial halfstep estimation) #
 
 def calculate_Bz(config, jx, jy):
     """
@@ -239,15 +220,15 @@ def calculate_Bz(config, jx, jy):
     # NOTE: use gradient instead if available (cupy doesn't have gradient yet).
     djx_dy = jx[1:-1, 2:] - jx[1:-1, :-2]
     djy_dx = jy[2:, 1:-1] - jy[:-2, 1:-1]
-    djx_dy = cp.pad(djx_dy, 1, 'constant', constant_values=0)
-    djy_dx = cp.pad(djy_dx, 1, 'constant', constant_values=0)
+    djx_dy = np.pad(djx_dy, 1, 'constant', constant_values=0)
+    djy_dx = np.pad(djy_dx, 1, 'constant', constant_values=0)
     rhs = -(djx_dy - djy_dx) / (config.grid_step_size * 2)  # -?
 
     # As usual, the boundary conditions are zero
     # (otherwise add them to boundary cells, divided by grid_step_size/2
 
     # 1. Apply DST-Type1-2D (Discrete Sine Transform Type 1 2D) to the RHS.
-    f = dct2d(rhs)
+    f = scipy.fftpack.dctn(rhs, type=1)
 
     # 2. Multiply f by the special matrix that does the job and normalizes.
     f *= neumann_matrix(config.grid_steps, config.grid_step_size)
@@ -257,8 +238,7 @@ def calculate_Bz(config, jx, jy):
     #    unnormalized DCT-Type1 is its own inverse, up to a factor 2(N+1)
     #    and we take all scaling matters into account with a single factor
     #    hidden inside neumann_matrix.
-    Bz = dct2d(f)
-    numba.cuda.synchronize()
+    Bz = scipy.fftpack.dctn(f, type=1)
 
     Bz -= Bz.mean()  # Integral over Bz must be 0.
 
@@ -665,7 +645,7 @@ def move_smart_kernel(xi_step_size, reflect_boundary,
         Ez = interp9(Ez_avg, i, j, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM)
         Bx = interp9(Bx_avg, i, j, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM)
         By = interp9(By_avg, i, j, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM)
-        Bz = 0  # Bz = 0 for now
+        Bz = interp9(Bz_avg, i, j, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM)
 
         # Move the particles according the the fields
         gamma_m = sqrt(m**2 + pz**2 + px**2 + py**2)
@@ -792,7 +772,7 @@ def step(config, const, virt_params, prev, beam_ro):
         Ex, Ey = 2 * Ex - prev.Ex, 2 * Ey - prev.Ey
         Bx, By = 2 * Bx - prev.Bx, 2 * By - prev.By
 
-    Ez = calculate_Ez(config, const_ram, jx, jy)
+    Ez = calculate_Ez(config, const, jx, jy)
     Bz = calculate_Bz(config, jx, jy)
 
     Ex_avg = (Ex + prev.Ex) / 2
@@ -822,7 +802,7 @@ def step(config, const, virt_params, prev, beam_ro):
         Ex, Ey = 2 * Ex - prev.Ex, 2 * Ey - prev.Ey
         Bx, By = 2 * Bx - prev.Bx, 2 * By - prev.By
 
-    Ez = calculate_Ez(config, const_ram, jx, jy)
+    Ez = calculate_Ez(config, const, jx, jy)
     Bz = calculate_Bz(config, jx, jy)
 
     Ex_avg = (Ex + prev.Ex) / 2
