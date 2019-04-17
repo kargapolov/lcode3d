@@ -168,30 +168,18 @@ def calculate_Ez(config, const_ram, jx, jy):
 
 # Solving Laplace or Helmholtz equation with mixed boundary conditions #
 
-# jury-rigged from padded rFFT
 def mix2d(a):
     """
     Calculate a DST-DCT-hybrid transform
-    (DST in first direction, DCT in second one),
-    jury-rigged from padded rFFT
-    (anti-symmetrically in first direction, symmetrically in second direction).
+    (DST in first direction, DCT in second one).
     """
     # NOTE: LCODE 3D uses x as the first direction, thus the confision below.
-    M, N = a.shape
-    #                                  /(0  1  2  0)-2 -1 \      +---->  x
-    #  / 1  2 \                       | (0  3  4  0)-4 -3  |     |      (M)
-    #  | 3  4 |  mixed-symmetrically  | (0  5  6  0)-6 -5  |     |
-    #  | 5  6 |       padded to       | (0  7  8  0)-8 -7  |     v
-    #  \ 7  8 /                       |  0 +5 +6  0 -6 -5  |
-    #                                  \ 0 +3 +4  0 -4 -3 /      y (N)
-    p = cp.zeros((2 * M + 2, 2 * N - 2))  # wider than before
-    p[1:M+1, :N] = a
-    p[M+2:2*M+2, :N] = -cp.flipud(a)  # flip to right on drawing above
-    p[1:M+1, N-1:2*N-2] = cp.fliplr(a)[:, :-1]  # flip down on drawing above
-    p[M+2:2*M+2, N-1:2*N-2] = -cp.flipud(cp.fliplr(a))[:, :-1]
-    # Note: the returned array is wider than the input array, it is padded
-    # with zeroes (depicted above as a square region marked with round braces).
-    return -cp.fft.rfft2(p)[:M+2, :N].imag  # FFT, cut a corner with 0s, -imag
+    a = a.get()
+    a_dst     = scipy.fftpack.dst(a,     type=1, axis=0)
+    a_dst_dct = scipy.fftpack.dct(a_dst, type=1, axis=1)
+    # add zeros in top and bottom
+    a_out = np.pad(a_dst_dct, ((1,1),(0,0)), 'constant', constant_values=0)
+    return cp.asarray(a_out)
 
 
 def mixed_matrix(grid_steps, grid_step_size, subtraction_trick):
