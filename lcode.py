@@ -20,6 +20,7 @@ from math import sqrt, floor
 
 import os
 import sys
+import time
 
 import matplotlib.pyplot as plt
 
@@ -1202,7 +1203,10 @@ def diags_ro_slice(config, xi_i, xi, ro):
                origin='lower', vmin=-0.1, vmax=0.1, cmap='bwr')
 
 
+start_time = None
+
 def diagnostics(view_state, config, xi_i, Ez_00_history):
+    global start_time
     xi = -xi_i * config.xi_step_size
 
     Ez_00 = Ez_00_history[-1]
@@ -1212,13 +1216,17 @@ def diagnostics(view_state, config, xi_i, Ez_00_history):
     max_zn = diags_ro_zn(config, ro)
     diags_ro_slice(config, xi_i, xi, ro)
 
-    print(f'xi={xi:+.4f} {Ez_00:+.4e}|{peak_report}|zn={max_zn:.3f}')
+    ti = (time.time() - start_time) / (abs(xi) + config.xi_step_size)
+
+    print(f'xi={xi:+.4f} {Ez_00:+.4e}|{peak_report}|zn={max_zn:.3f}|t={ti:.1f}')
     sys.stdout.flush()
 
 
 # Main loop #
 
 def main():
+    global start_time
+    start_time = time.time()
     import config
     with cp.cuda.Device(config.gpu_index):
 
