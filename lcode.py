@@ -62,7 +62,7 @@ def dirichlet_matrix(grid_steps, grid_step_size):
     return mul / (2 * (grid_steps - 1))**2  # additional 2xDST normalization
 
 
-def calculate_Ez(config, const_ram, jx, jy):
+def calculate_Ez(config, const, jx, jy):
     """
     Calculate Ez as iDST2D(dirichlet_matrix * DST2D(djx/dx + djy/dy)).
     """
@@ -78,7 +78,7 @@ def calculate_Ez(config, const_ram, jx, jy):
     f = scipy.fftpack.dstn(rhs_inner, type=1)
 
     # 2. Multiply f by the special matrix that does the job and normalizes.
-    f *= const_ram.dirichlet_matrix
+    f *= const.dirichlet_matrix
 
     # 3. Apply iDST-Type1-2D (Inverse Discrete Sine Transform Type 1 2D).
     #    We don't have to define a separate iDST function, because
@@ -88,7 +88,7 @@ def calculate_Ez(config, const_ram, jx, jy):
     
     Ez_inner = scipy.fftpack.dstn(f, type=1)
     Ez = np.pad(Ez_inner, 1, 'constant', constant_values=0)
-    return np.asarray(Ez)
+    return Ez
 
 
 # Solving Laplace or Helmholtz equation with mixed boundary conditions #
@@ -423,6 +423,7 @@ def make_fine_plasma_grid(steps, step_size, fineness):
     return plasma_grid
 
 
+
 def make_plasma(steps, cell_size, coarseness=2, fineness=2):
     """
     Make coarse plasma initial state arrays and the arrays needed to intepolate
@@ -445,8 +446,8 @@ def make_plasma(steps, cell_size, coarseness=2, fineness=2):
     Nc = len(coarse_grid)
 
     # Create plasma electrons on the coarse grid, the ones that really move
-    coarse_x_init = np.broadcast_to(np.asarray(coarse_grid_xs), (Nc, Nc))
-    coarse_y_init = np.broadcast_to(np.asarray(coarse_grid_ys), (Nc, Nc))
+    coarse_x_init = np.broadcast_to(coarse_grid_xs, (Nc, Nc))
+    coarse_y_init = np.broadcast_to(coarse_grid_ys, (Nc, Nc))
     coarse_x_offt = np.zeros((Nc, Nc))
     coarse_y_offt = np.zeros((Nc, Nc))
     coarse_px = np.zeros((Nc, Nc))
@@ -600,11 +601,6 @@ def deposit(config, ro_initial, x_offt, y_offt, m, q, px, py, pz, virt_params):
     Interpolate coarse plasma into fine plasma and deposit it on the
     charge density and current grids.
     """
-    #ro_initial = ro_initial
-    x_offt, y_offt = x_offt, y_offt
-    px, py, pz = px, py, pz
-    #virt_params = virt_params
-
     virtplasma_smallness_factor = 1 / (config.plasma_coarseness *
                                        config.plasma_fineness)**2
     ro = np.zeros((config.grid_steps, config.grid_steps))
@@ -747,16 +743,16 @@ def move_smart(config,
                            Ex_avg, Ey_avg, Ez_avg, Bx_avg, By_avg, Bz_avg,
                            x_offt_new.ravel(), y_offt_new.ravel(),
                            px_new.ravel(), py_new.ravel(), pz_new.ravel())
-    return (np.asarray(x_offt_new),
-            np.asarray(y_offt_new),
-            np.asarray(px_new),
-            np.asarray(py_new),
-            np.asarray(pz_new))
+    return (x_offt_new,
+            y_offt_new,
+            px_new,
+            py_new,
+            pz_new)
 
 
 # The scheme of a single step in xi #
 
-def step(config, const_ram, virt_params, prev, beam_ro):
+def step(config, const, virt_params, prev, beam_ro):
     """
     Calculate the next iteration of plasma evolution and response.
     Returns the new state with the following attributes:
@@ -766,21 +762,21 @@ def step(config, const_ram, virt_params, prev, beam_ro):
 
     # Estimate the midpoint particle position without knowing the fields yet
     # TODO: use regular pusher and pass zero fields? previous fields?
-    x_offt, y_offt = move_estimate_wo_fields(config, const_ram.m,
-                                             const_ram.x_init, const_ram.y_init,
+    x_offt, y_offt = move_estimate_wo_fields(config, const.m,
+                                             const.x_init, const.y_init,
                                              prev.x_offt, prev.y_offt,
                                              prev.px, prev.py, prev.pz)
 
     # Interpolate fields in midpoint and move particles with previous fields.
     x_offt, y_offt, px, py, pz = move_smart(
-        config, const_ram.m, const_ram.q, const_ram.x_init, const_ram.y_init,
+        config, const.m, const.q, const.x_init, const.y_init,
         prev.x_offt, prev.y_offt, x_offt, y_offt, prev.px, prev.py, prev.pz,
         # no halfstep-averaged fields yet
         prev.Ex, prev.Ey, prev.Ez, prev.Bx, prev.By, prev.Bz
     )
     # Recalculate the plasma density and currents.
     ro, jx, jy, jz = deposit(
-        config, const_ram.ro_initial, x_offt, y_offt, const_ram.m, const_ram.q, px, py, pz,
+        config, const.ro_initial, x_offt, y_offt, const.m, const.q, px, py, pz,
         virt_params
     )
 
@@ -808,13 +804,13 @@ def step(config, const_ram, virt_params, prev, beam_ro):
 
     # Repeat the previous procedure using averaged fields.
     x_offt, y_offt, px, py, pz = move_smart(
-        config, const_ram.m, const_ram.q, const_ram.x_init, const_ram.y_init,
+        config, const.m, const.q, const.x_init, const.y_init,
         prev.x_offt, prev.y_offt, x_offt, y_offt,
         prev.px, prev.py, prev.pz,
         Ex_avg, Ey_avg, Ez_avg, Bx_avg, By_avg, Bz_avg
     )
-    ro, jx, jy, jz = deposit(config, const_ram.ro_initial, x_offt, y_offt,
-                             const_ram.m, const_ram.q, px, py, pz, virt_params)
+    ro, jx, jy, jz = deposit(config, const.ro_initial, x_offt, y_offt,
+                             const.m, const.q, px, py, pz, virt_params)
 
     ro_in = ro if not config.field_solver_variant_A else (ro + prev.ro) / 2
     jz_in = jz if not config.field_solver_variant_A else (jz + prev.jz) / 2
@@ -838,13 +834,13 @@ def step(config, const_ram, virt_params, prev, beam_ro):
 
     # Repeat the previous procedure using averaged fields once again.
     x_offt, y_offt, px, py, pz = move_smart(
-        config, const_ram.m, const_ram.q, const_ram.x_init, const_ram.y_init,
+        config, const.m, const.q, const.x_init, const.y_init,
         prev.x_offt, prev.y_offt, x_offt, y_offt,
         prev.px, prev.py, prev.pz,
         Ex_avg, Ey_avg, Ez_avg, Bx_avg, By_avg, Bz_avg
     )
-    ro, jx, jy, jz = deposit(config, const_ram.ro_initial, x_offt, y_offt,
-                             const_ram.m, const_ram.q, px, py, pz, virt_params)
+    ro, jx, jy, jz = deposit(config, const.ro_initial, x_offt, y_offt,
+                             const.m, const.q, px, py, pz, virt_params)
 
     # TODO: what do we need that roj_new for, jx_prev/jy_prev only?
 
@@ -891,7 +887,7 @@ def init(config):
     m, q = m, q
     x_init, y_init = x_init, y_init
     ro_init = ro_initial
-    const_ram = Arrays(m=m, q=q,
+    const = Arrays(m=m, q=q,
                        x_init=x_init, y_init=y_init, 
                        ro_initial=ro_init, dirichlet_matrix=dir_mat)
 
@@ -903,7 +899,7 @@ def init(config):
                       Bx=zeros(), By=zeros(), Bz=zeros(),
                       ro=zeros(), jx=zeros(), jy=zeros(), jz=zeros())
 
-    return xs, ys, const_ram, virt_params, state
+    return xs, ys, const, virt_params, state
 
 
 # Some really sloppy diagnostics #
@@ -969,13 +965,13 @@ def main():
     global start_time
     start_time = time.time()
     import config
-    xs, ys, const_ram, virt_params, state = init(config)
+    xs, ys, const, virt_params, state = init(config)
     Ez_00_history = []
 
     for xi_i in range(config.xi_steps):
         beam_ro = config.beam(xi_i, xs, ys)
 
-        state = step(config, const_ram, virt_params, state, beam_ro)
+        state = step(config, const, virt_params, state, beam_ro)
 
         ez = state.Ez[config.grid_steps // 2, config.grid_steps // 2]
         Ez_00_history.append(ez)
