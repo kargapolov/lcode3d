@@ -425,7 +425,7 @@ def weights_cpu(x, y, grid_steps, grid_step_size):
     return i, j, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM
 
 
-@numba.jit(inline=True)
+@numba.njit
 def interp9(a, i, j, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM):
     """
     Collect value from a cell and 8 surrounding cells (using `weights` output).
@@ -887,7 +887,7 @@ def initial_deposition(config, x_offt, y_offt, px, py, pz, m, q, virt_params):
 
 # Field interpolation and particle movement (fused) #
 
-@numba.cuda.jit
+@numba.njit
 def move_smart_kernel(xi_step_size, reflect_boundary,
                       grid_step_size, grid_steps,
                       ms, qs,
@@ -904,79 +904,76 @@ def move_smart_kernel(xi_step_size, reflect_boundary,
     Also reflect the particles from `+-reflect_boundary`.
     """
     # Do nothing if our thread does not have a coarse particle to move.
-    k = numba.cuda.grid(1)
-    if k >= ms.size:
-        return
+    for k in range(ms.size):
+        m, q = ms[k], qs[k]
 
-    m, q = ms[k], qs[k]
+        opx, opy, opz = prev_px[k], prev_py[k], prev_pz[k]
+        px, py, pz = opx, opy, opz
+        x_offt, y_offt = prev_x_offt[k], prev_y_offt[k]
 
-    opx, opy, opz = prev_px[k], prev_py[k], prev_pz[k]
-    px, py, pz = opx, opy, opz
-    x_offt, y_offt = prev_x_offt[k], prev_y_offt[k]
+        # Calculate midstep positions and fields in them.
+        x_halfstep = x_init[k] + (prev_x_offt[k] + estimated_x_offt[k]) / 2
+        y_halfstep = y_init[k] + (prev_y_offt[k] + estimated_y_offt[k]) / 2
+        i, j, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM = weights_cpu(
+            x_halfstep, y_halfstep, grid_steps, grid_step_size
+        )
+        Ex = interp9(Ex_avg, i, j, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM)
+        Ey = interp9(Ey_avg, i, j, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM)
+        Ez = interp9(Ez_avg, i, j, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM)
+        Bx = interp9(Bx_avg, i, j, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM)
+        By = interp9(By_avg, i, j, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM)
+        Bz = 0  # Bz = 0 for now
 
-    # Calculate midstep positions and fields in them.
-    x_halfstep = x_init[k] + (prev_x_offt[k] + estimated_x_offt[k]) / 2
-    y_halfstep = y_init[k] + (prev_y_offt[k] + estimated_y_offt[k]) / 2
-    i, j, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM = weights(
-        x_halfstep, y_halfstep, grid_steps, grid_step_size
-    )
-    Ex = interp9(Ex_avg, i, j, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM)
-    Ey = interp9(Ey_avg, i, j, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM)
-    Ez = interp9(Ez_avg, i, j, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM)
-    Bx = interp9(Bx_avg, i, j, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM)
-    By = interp9(By_avg, i, j, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM)
-    Bz = interp9(Bz_avg, i, j, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM)
+        # Move the particles according the the fields
+        gamma_m = sqrt(m**2 + pz**2 + px**2 + py**2)
+        vx, vy, vz = px / gamma_m, py / gamma_m, pz / gamma_m
+        factor_1 = q * xi_step_size / (1 - pz / gamma_m)
+        dpx = factor_1 * (Ex + vy * Bz - vz * By)
+        dpy = factor_1 * (Ey - vx * Bz + vz * Bx)
+        dpz = factor_1 * (Ez + vx * By - vy * Bx)
+        px, py, pz = opx + dpx / 2, opy + dpy / 2, opz + dpz / 2
 
-    # Move the particles according the the fields
-    gamma_m = sqrt(m**2 + pz**2 + px**2 + py**2)
-    vx, vy, vz = px / gamma_m, py / gamma_m, pz / gamma_m
-    factor_1 = q * xi_step_size / (1 - pz / gamma_m)
-    dpx = factor_1 * (Ex + vy * Bz - vz * By)
-    dpy = factor_1 * (Ey - vx * Bz + vz * Bx)
-    dpz = factor_1 * (Ez + vx * By - vy * Bx)
-    px, py, pz = opx + dpx / 2, opy + dpy / 2, opz + dpz / 2
+        # Move the particles according the the fields again using updated momenta
+        gamma_m = sqrt(m**2 + pz**2 + px**2 + py**2)
+        vx, vy, vz = px / gamma_m, py / gamma_m, pz / gamma_m
+        factor_1 = q * xi_step_size / (1 - pz / gamma_m)
+        dpx = factor_1 * (Ex + vy * Bz - vz * By)
+        dpy = factor_1 * (Ey - vx * Bz + vz * Bx)
+        dpz = factor_1 * (Ez + vx * By - vy * Bx)
+        px, py, pz = opx + dpx / 2, opy + dpy / 2, opz + dpz / 2
 
-    # Move the particles according the the fields again using updated momenta
-    gamma_m = sqrt(m**2 + pz**2 + px**2 + py**2)
-    vx, vy, vz = px / gamma_m, py / gamma_m, pz / gamma_m
-    factor_1 = q * xi_step_size / (1 - pz / gamma_m)
-    dpx = factor_1 * (Ex + vy * Bz - vz * By)
-    dpy = factor_1 * (Ey - vx * Bz + vz * Bx)
-    dpz = factor_1 * (Ez + vx * By - vy * Bx)
-    px, py, pz = opx + dpx / 2, opy + dpy / 2, opz + dpz / 2
+        # Apply the coordinate and momenta increments
+        gamma_m = sqrt(m**2 + pz**2 + px**2 + py**2)
 
-    # Apply the coordinate and momenta increments
-    gamma_m = sqrt(m**2 + pz**2 + px**2 + py**2)
+        x_offt += px / (gamma_m - pz) * xi_step_size  # no mixing with x_init
+        y_offt += py / (gamma_m - pz) * xi_step_size  # no mixing with y_init
 
-    x_offt += px / (gamma_m - pz) * xi_step_size  # no mixing with x_init
-    y_offt += py / (gamma_m - pz) * xi_step_size  # no mixing with y_init
+        px, py, pz = opx + dpx, opy + dpy, opz + dpz
 
-    px, py, pz = opx + dpx, opy + dpy, opz + dpz
+        # Reflect the particles from `+-reflect_boundary`.
+        # TODO: avoid branching?
+        x = x_init[k] + x_offt
+        y = y_init[k] + y_offt
+        if x > +reflect_boundary:
+            x = +2 * reflect_boundary - x
+            x_offt = x - x_init[k]
+            px = -px
+        if x < -reflect_boundary:
+            x = -2 * reflect_boundary - x
+            x_offt = x - x_init[k]
+            px = -px
+        if y > +reflect_boundary:
+            y = +2 * reflect_boundary - y
+            y_offt = y - y_init[k]
+            py = -py
+        if y < -reflect_boundary:
+            y = -2 * reflect_boundary - y
+            y_offt = y - y_init[k]
+            py = -py
 
-    # Reflect the particles from `+-reflect_boundary`.
-    # TODO: avoid branching?
-    x = x_init[k] + x_offt
-    y = y_init[k] + y_offt
-    if x > +reflect_boundary:
-        x = +2 * reflect_boundary - x
-        x_offt = x - x_init[k]
-        px = -px
-    if x < -reflect_boundary:
-        x = -2 * reflect_boundary - x
-        x_offt = x - x_init[k]
-        px = -px
-    if y > +reflect_boundary:
-        y = +2 * reflect_boundary - y
-        y_offt = y - y_init[k]
-        py = -py
-    if y < -reflect_boundary:
-        y = -2 * reflect_boundary - y
-        y_offt = y - y_init[k]
-        py = -py
-
-    # Save the results into the output arrays  # TODO: get rid of that
-    new_x_offt[k], new_y_offt[k] = x_offt, y_offt
-    new_px[k], new_py[k], new_pz[k] = px, py, pz
+        # Save the results into the output arrays  # TODO: get rid of that
+        new_x_offt[k], new_y_offt[k] = x_offt, y_offt
+        new_px[k], new_py[k], new_pz[k] = px, py, pz
 
 
 def move_smart(config,
@@ -987,26 +984,28 @@ def move_smart(config,
     Update plasma particle coordinates and momenta according to the field
     values interpolated halfway between the previous plasma particle location
     and the the best estimation of its next location currently available to us.
-    This is a convenience wrapper around the `move_smart_kernel` CUDA kernel.
     """
-    x_offt_new = cp.zeros_like(x_prev_offt)
-    y_offt_new = cp.zeros_like(y_prev_offt)
-    px_new = cp.zeros_like(px_prev)
-    py_new = cp.zeros_like(py_prev)
-    pz_new = cp.zeros_like(pz_prev)
+    x_offt_new = np.zeros_like(x_prev_offt.get())
+    y_offt_new = np.zeros_like(y_prev_offt.get())
+    px_new = np.zeros_like(px_prev.get())
+    py_new = np.zeros_like(py_prev.get())
+    pz_new = np.zeros_like(pz_prev.get())
     cfg = int(np.ceil(x_init.size / WARP_SIZE)), WARP_SIZE
-    move_smart_kernel[cfg](config.xi_step_size, config.reflect_boundary,
+    move_smart_kernel(config.xi_step_size, config.reflect_boundary,
                            config.grid_step_size, config.grid_steps,
-                           m.ravel(), q.ravel(),
-                           x_init.ravel(), y_init.ravel(),
-                           x_prev_offt.ravel(), y_prev_offt.ravel(),
-                           estimated_x_offt.ravel(), estimated_y_offt.ravel(),
-                           px_prev.ravel(), py_prev.ravel(), pz_prev.ravel(),
-                           Ex_avg, Ey_avg, Ez_avg, Bx_avg, By_avg, Bz_avg,
+                           m.get().ravel(), q.get().ravel(),
+                           x_init.get().ravel(), y_init.get().ravel(),
+                           x_prev_offt.get().ravel(), y_prev_offt.get().ravel(),
+                           estimated_x_offt.get().ravel(), estimated_y_offt.get().ravel(),
+                           px_prev.get().ravel(), py_prev.get().ravel(), pz_prev.get().ravel(),
+                           Ex_avg.get(), Ey_avg.get(), Ez_avg.get(), Bx_avg.get(), By_avg.get(), Bz_avg,
                            x_offt_new.ravel(), y_offt_new.ravel(),
                            px_new.ravel(), py_new.ravel(), pz_new.ravel())
-    numba.cuda.synchronize()
-    return x_offt_new, y_offt_new, px_new, py_new, pz_new
+    return (cp.asarray(x_offt_new),
+            cp.asarray(y_offt_new),
+            cp.asarray(px_new),
+            cp.asarray(py_new),
+            cp.asarray(pz_new))
 
 
 # The scheme of a single step in xi #
