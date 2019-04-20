@@ -399,7 +399,7 @@ def weights(x, y, grid_steps, grid_step_size):
     return i, j, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM
 
 
-#@numba.jit#(inline=True)
+@numba.njit
 def weights_cpu(x, y, grid_steps, grid_step_size):
     """
     Calculate the indices of a cell corresponding to the coordinates,
@@ -436,7 +436,7 @@ def interp9(a, i, j, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM):
     )
 
 
-#@numba.jit(inline=True)
+@numba.jit(inline=True)
 def deposit9(a, i, j, val, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM):
     """
     Deposit value into a cell and 8 surrounding cells (using `weights` output).
@@ -454,7 +454,7 @@ def deposit9(a, i, j, val, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM):
     numba.cuda.atomic.add(a, (i + 0, j - 1), val * w0M)
     numba.cuda.atomic.add(a, (i + 1, j - 1), val * wPM)
 
-#@numba.jit#(inline=True)
+@numba.njit
 def deposit9_cpu(a, i, j, val, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM):
     """
     Deposit value into a cell and 8 surrounding cells (using `weights` output).
@@ -689,7 +689,7 @@ def make_plasma_cpu(steps, cell_size, coarseness=2, fineness=2):
             coarse_px, coarse_py, coarse_pz, coarse_m, coarse_q, virt_params)
 
 
-#@numba.jit(inline=True)
+@numba.njit
 def mix(coarse, A, B, C, D, pi, ni, pj, nj):
     """
     Bilinearly interpolate fine plasma properties from four
@@ -704,7 +704,7 @@ def mix(coarse, A, B, C, D, pi, ni, pj, nj):
             C * coarse[ni, pj] + D * coarse[ni, nj])
 
 
-#@numba.jit(inline=True)
+@numba.njit
 def coarse_to_fine(fi, fj, c_x_offt, c_y_offt, c_m, c_q, c_px, c_py, c_pz,
                    virtplasma_smallness_factor, fine_grid,
                    influence_prev, influence_next, indices_prev, indices_next):
@@ -739,7 +739,7 @@ def coarse_to_fine(fi, fj, c_x_offt, c_y_offt, c_m, c_q, c_px, c_py, c_pz,
 
 # Deposition #
 
-#@numba.cuda.jit
+@numba.cuda.jit
 def deposit_kernel(grid_steps, grid_step_size, virtplasma_smallness_factor,
                    c_x_offt, c_y_offt, c_m, c_q, c_px, c_py, c_pz,  # coarse
                    fine_grid,
@@ -778,7 +778,7 @@ def deposit_kernel(grid_steps, grid_step_size, virtplasma_smallness_factor,
     deposit9(out_jy, i, j, djy, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM)
     deposit9(out_jz, i, j, djz, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM)
 
-
+@numba.njit
 def deposit_kernel_cpu(grid_steps, grid_step_size, virtplasma_smallness_factor,
                    c_x_offt, c_y_offt, c_m, c_q, c_px, c_py, c_pz,  # coarse
                    fine_grid,
