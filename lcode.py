@@ -137,7 +137,7 @@ def dx_dy(arr, grid_step_size):
     return dx / (grid_step_size * 2), dy / (grid_step_size * 2)
 
 
-def calculate_Ex_Ey_Bx_By(config, Ex_avg, Ey_avg, Bx_avg, By_avg,
+def calculate_Ex_Ey_Bx_By(config, const, Ex_avg, Ey_avg, Bx_avg, By_avg,
                           beam_ro, ro, jx, jy, jz, jx_prev, jy_prev):
     """
     Calculate transverse fields as iDST-DCT(mixed_matrix * DST-DCT(RHS.T)).T,
@@ -176,8 +176,7 @@ def calculate_Ex_Ey_Bx_By(config, Ex_avg, Ey_avg, Bx_avg, By_avg,
     Ey_f = mix2d(Ey_rhs[1:-1, :])[1:-1, :]
 
     # 3. Multiply f by the magic matrix.
-    mix_mat = mixed_matrix(config.grid_steps, config.grid_step_size,
-                           config.field_solver_subtraction_trick)
+    mix_mat = const.field_mixed_matrix
     Ey_f *= mix_mat
 
     # 4. Apply our mixed DCT-DST transform again.
@@ -763,7 +762,7 @@ def step(config, const, virt_params, prev, beam_ro):
     # Calculate the fields.
     ro_in = ro if not config.field_solver_variant_A else (ro + prev.ro) / 2
     jz_in = jz if not config.field_solver_variant_A else (jz + prev.jz) / 2
-    Ex, Ey, Bx, By = calculate_Ex_Ey_Bx_By(config,
+    Ex, Ey, Bx, By = calculate_Ex_Ey_Bx_By(config, const,
                                            prev.Ex, prev.Ey, prev.Bx, prev.By,
                                            # no halfstep-averaged fields yet
                                            beam_ro, ro_in, jx, jy, jz_in,
@@ -794,7 +793,7 @@ def step(config, const, virt_params, prev, beam_ro):
 
     ro_in = ro if not config.field_solver_variant_A else (ro + prev.ro) / 2
     jz_in = jz if not config.field_solver_variant_A else (jz + prev.jz) / 2
-    Ex, Ey, Bx, By = calculate_Ex_Ey_Bx_By(config,
+    Ex, Ey, Bx, By = calculate_Ex_Ey_Bx_By(config, const,
                                            Ex_avg, Ey_avg, Bx_avg, By_avg,
                                            beam_ro, ro_in, jx, jy, jz_in,
                                            prev.jx, prev.jy)
@@ -864,12 +863,13 @@ def init(config):
                                     px, py, pz, m, q, virt_params)
     
     dir_mat = dirichlet_matrix(config.grid_steps, config.grid_step_size)
+    mix_mat = mixed_matrix(config.grid_steps, config.grid_step_size,
+                                      config.field_solver_subtraction_trick)
     m, q = m, q
     x_init, y_init = x_init, y_init
     ro_init = ro_initial
-    const = Arrays(m=m, q=q,
-                       x_init=x_init, y_init=y_init, 
-                       ro_initial=ro_init, dirichlet_matrix=dir_mat)
+    const = Arrays(m=m, q=q, x_init=x_init, y_init=y_init, ro_initial=ro_init,
+                   dirichlet_matrix=dir_mat, field_mixed_matrix = mix_mat)
 
     def zeros():
         return np.zeros((config.grid_steps, config.grid_steps))
