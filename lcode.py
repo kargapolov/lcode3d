@@ -895,15 +895,9 @@ def diagnostics(view_state, config, xi_i, Ez_00_history):
 
 def main():
     import config
-<<<<<<< HEAD
-=======
-    xs, ys, const, state = init(config)
-    Ez_00_history = []
-
->>>>>>> 2b9de45... remove virtplasma
     with cp.cuda.Device(config.gpu_index):
 
-        xs, ys, const, virt_params, state = init(config)
+        xs, ys, const, state = init(config)
         Ez_00_history = []
 
         for xi_i in range(config.xi_steps):
