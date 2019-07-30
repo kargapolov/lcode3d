@@ -891,6 +891,53 @@ def diagnostics(view_state, config, xi_i, Ez_00_history):
     sys.stdout.flush()
 
 
+# Noise reduction #
+
+def trim_end(config, X):
+    print(X.shape)
+    X_k = cp.fft.rfft2(X)
+    print(X_k.shape)
+    X_k[abs(X_k) > config.delta] = 0.
+    X_new = cp.fft.irfft2(X_k)
+    print(X_new.shape, '\n')
+    return X_new
+
+#@numba.cuda.jit
+#def trim_end_momentum_kernel(grid_steps, grid_step_size,
+#                      x_init, y_init, x_offt, y_offt, px, py, pz,
+#                      out_px, out_py, out_pz):
+    
+
+def trim_end_momentum(config, x_init, y_init, x_offt, y_offt, px, py, pz):
+    px_new = cp.zeros_like(px)
+    py_new = cp.zeros_like(py)
+    pz_new = cp.zeros_like(pz)
+
+    return px_new, py_new, pz_new
+
+def noise_reduction(config, const, state):
+    Ex = trim_end(config, state.Ex)
+    Ey = trim_end(config, state.Ey)
+    Ez = trim_end(config, state.Ez)
+    Bx = trim_end(config, state.Bx)
+    By = trim_end(config, state.By)
+    Bz = trim_end(config, state.Bz)
+
+    px, py, pz = trim_end_momentum(config, const.x_init, const.y_init,
+                                   state.x_offt, state.y_offt, 
+                                   state.px, state.py, state.pz)
+
+    x_offt = trim_end(config, state.x_offt)
+    y_offt = trim_end(config, state.y_offt)
+
+    new_state = GPUArrays(x_offt=x_offt.copy(), y_offt=y_offt.copy(),
+                          px=px, py=py, pz=pz,
+                          Ex=Ex.copy(), Ey=Ey.copy(), Ez=Ez.copy(),
+                          Bx=Bx.copy(), By=By.copy(), Bz=Bz.copy(),
+                          ro=state.ro, jx=state.jx, jy=state.jy, jz=state.jz)
+                          
+    return new_state
+
 # Main loop #
 
 def main():
@@ -904,6 +951,11 @@ def main():
             beam_ro = config.beam(xi_i, xs, ys)
 
             state = step(config, const, state, beam_ro)
+            
+            time_for_noise_red = xi_i % config.noise_red_each_N_steps == 0
+            if time_for_noise_red:
+                state = noise_reduction(config, const, state)
+
             view_state = GPUArraysView(state)
 
             ez = view_state.Ez[config.grid_steps // 2, config.grid_steps // 2]
