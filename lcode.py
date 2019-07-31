@@ -893,42 +893,92 @@ def diagnostics(view_state, config, xi_i, Ez_00_history):
 
 # Noise reduction #
 
-def trim_end(config, X):
-    print(X.shape)
-    X_k = cp.fft.rfft2(X)
-    print(X_k.shape)
-    X_k[abs(X_k) > config.delta] = 0.
-    X_new = cp.fft.irfft2(X_k)
-    print(X_new.shape, '\n')
-    return X_new
+def trim_end(delta, a):
+    assert a.shape[0] == a.shape[1]
+    a_k = cp.fft.fft2(a)
+    a_k[abs(a_k) > delta] = 0.
+    return cp.fft.ifft2(a_k).real
 
-#@numba.cuda.jit
-#def trim_end_momentum_kernel(grid_steps, grid_step_size,
-#                      x_init, y_init, x_offt, y_offt, px, py, pz,
-#                      out_px, out_py, out_pz):
-    
+@numba.cuda.jit
+def deposit_momentum_kernel(grid_steps, grid_step_size,
+                            x_init, y_init,
+                            x_offt, y_offt,
+                            px, py, pz,
+                            out_px, out_py, out_pz):
+    k = numba.cuda.grid(1)
+    if k >= x_init.size:
+        return
+
+    x, y = x_init[k] + x_offt[k], y_init[k] + y_offt[k]
+    i, j, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM = weights(
+        x, y, grid_steps, grid_step_size
+    )
+    deposit9(out_px, i, j, px[k], wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM)
+    deposit9(out_py, i, j, py[k], wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM)
+    deposit9(out_pz, i, j, pz[k], wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM)
+
+@numba.cuda.jit
+def interp_momentum_kernel(grid_steps, grid_step_size,
+                           x_init, y_init,
+                           x_offt, y_offt,
+                           px, py, pz,
+                           out_px, out_py, out_pz):
+    k = numba.cuda.grid(1)
+    if k >= x_init.size:
+        return
+
+    # Calculate positions and momentums in them.
+    x, y = x_init[k] + x_offt[k], y_init[k] + y_offt[k]
+    i, j, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM = weights(
+        x, y, grid_steps, grid_step_size
+    )
+    out_px[k] = interp9(px, i, j, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM)
+    out_py[k] = interp9(py, i, j, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM)
+    out_pz[k] = interp9(pz, i, j, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM)
 
 def trim_end_momentum(config, x_init, y_init, x_offt, y_offt, px, py, pz):
+    px_index = cp.zeros((config.grid_steps, config.grid_steps))
+    py_index = cp.zeros((config.grid_steps, config.grid_steps))
+    pz_index = cp.zeros((config.grid_steps, config.grid_steps))
+    cfg = int(np.ceil(x_init.size / WARP_SIZE)), WARP_SIZE
+    deposit_momentum_kernel[cfg](config.grid_steps, config.grid_step_size,
+                                 x_init.ravel(), y_init.ravel(),
+                                 x_offt.ravel(), y_offt.ravel(),
+                                 px.ravel(), py.ravel(), pz.ravel(),
+                                 px_index, py_index, pz_index)
+    numba.cuda.synchronize()
+    
+    # Trimmed momentums
+    px_tr = trim_end(config.delta, px_index)
+    py_tr = trim_end(config.delta, py_index)
+    pz_tr = trim_end(config.delta, pz_index)
+
     px_new = cp.zeros_like(px)
     py_new = cp.zeros_like(py)
     pz_new = cp.zeros_like(pz)
+    interp_momentum_kernel[cfg](config.grid_steps, config.grid_step_size,
+                                x_init.ravel(), y_init.ravel(),
+                                x_offt.ravel(), y_offt.ravel(),
+                                px_tr, py_tr, pz_tr,
+                                px_new.ravel(), py_new.ravel(), pz_new.ravel())
+    numba.cuda.synchronize()
 
     return px_new, py_new, pz_new
 
 def noise_reduction(config, const, state):
-    Ex = trim_end(config, state.Ex)
-    Ey = trim_end(config, state.Ey)
-    Ez = trim_end(config, state.Ez)
-    Bx = trim_end(config, state.Bx)
-    By = trim_end(config, state.By)
-    Bz = trim_end(config, state.Bz)
+    Ex = trim_end(config.delta, state.Ex)
+    Ey = trim_end(config.delta, state.Ey)
+    Ez = trim_end(config.delta, state.Ez)
+    Bx = trim_end(config.delta, state.Bx)
+    By = trim_end(config.delta, state.By)
+    Bz = trim_end(config.delta, state.Bz)
+    
+    x_offt = trim_end(config.delta, state.x_offt)
+    y_offt = trim_end(config.delta, state.y_offt)
 
     px, py, pz = trim_end_momentum(config, const.x_init, const.y_init,
                                    state.x_offt, state.y_offt, 
                                    state.px, state.py, state.pz)
-
-    x_offt = trim_end(config, state.x_offt)
-    y_offt = trim_end(config, state.y_offt)
 
     new_state = GPUArrays(x_offt=x_offt.copy(), y_offt=y_offt.copy(),
                           px=px, py=py, pz=pz,
