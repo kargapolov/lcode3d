@@ -896,6 +896,7 @@ def diagnostics(view_state, config, xi_i, Ez_00_history):
 def trim_end(delta, a):
     assert a.shape[0] == a.shape[1]
     a_k = cp.fft.fft2(a)
+    print(abs(a_k).max())
     a_k[abs(a_k) > delta] = 0.
     return cp.fft.ifft2(a_k).real
 
@@ -949,9 +950,12 @@ def trim_end_momentum(config, x_init, y_init, x_offt, y_offt, px, py, pz):
     numba.cuda.synchronize()
     
     # Trimmed momentums
-    px_tr = trim_end(config.delta, px_index)
-    py_tr = trim_end(config.delta, py_index)
-    pz_tr = trim_end(config.delta, pz_index)
+    #px_tr = trim_end(config.delta, px_index)
+    #py_tr = trim_end(config.delta, py_index)
+    #pz_tr = trim_end(config.delta, pz_index)
+    px_tr = px_index
+    py_tr = py_index
+    pz_tr = pz_index
 
     px_new = cp.zeros_like(px)
     py_new = cp.zeros_like(py)
