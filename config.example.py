@@ -2,14 +2,16 @@
 grid_steps = 641; grid_step_size = .025  # 16.025
 #grid_steps = 769; grid_step_size = .02  # 15.38
 
+time_step = 50
+
 #xi_step_size = .02
 #xi_step_size = .01
 xi_step_size = .005
 #xi_step_size = .002
 #xi_step_size = .001
-xi_steps = int(3000 // xi_step_size)
+xi_steps = int(time_step // xi_step_size)
 
-diagnostics_each_N_steps = int(1 / xi_step_size)
+diagnostics_each_N_steps = int(0.1 / xi_step_size)
 #diagnostics_each_N_steps = int(.1 / xi_step_size)
 #diagnostics_each_N_steps = 1
 
@@ -20,6 +22,7 @@ reflect_padding_steps = 5
 plasma_padding_steps = 10
 plasma_coarseness, plasma_fineness = 3, 2
 
+max_radius = 7
 
 from numpy import cos, exp, pi, sqrt
 

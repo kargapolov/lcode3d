@@ -48,6 +48,11 @@ ELECTRON_MASS = 1
 
 # Grouping GPU arrays, with optional transparent RAM<->GPU copying #
 
+class Arrays:
+    def __init__(self, **kwargs):
+        for name, array in kwargs.items():
+            setattr(self, name, array)
+
 class GPUArrays:
     """
     A convenient way to group several GPU arrays and access them with a dot.
@@ -1031,16 +1036,31 @@ def diagnostics(view_state, config, xi_i, Ez_00_history):
 
 def main():
     import config
+    import beam
+
+    beam_particles = beam.BeamParticles(0)
+    beam.load(beam_particles, 'beamfile.bin')
+    beam_calulator = beam.BeamCalculator(config, beam_particles)
+
     with cp.cuda.Device(config.gpu_index):
 
         xs, ys, const, virt_params, state = init(config)
         Ez_00_history = []
 
-        for xi_i in range(config.xi_steps):
-            beam_ro = config.beam(xi_i, xs, ys)
+        beam_calulator.start_time_step()
 
-            state = step(config, const, virt_params, state, beam_ro)
+        for xi_i in range(config.xi_steps):
+            #beam_ro = config.beam(xi_i, xs, ys)
+            beam_ro = beam_calulator.layout_beam()
+
             view_state = GPUArraysView(state)
+            prev_fields = Arrays(Ex=view_state.Ex, Ey=view_state.Ey,
+                                 Ez=view_state.Ez, Bx=view_state.Bx,
+                                 By=view_state.By, Bz=view_state.Bz)
+            
+            state = step(config, const, virt_params, state, beam_ro)
+
+            beam_calulator.move_beam(view_state, prev_fields)
 
             ez = view_state.Ez[config.grid_steps // 2, config.grid_steps // 2]
             Ez_00_history.append(ez)
