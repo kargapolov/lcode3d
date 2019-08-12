@@ -874,7 +874,8 @@ def diags_ro_slice(config, xi_i, xi, ro):
 
     fname = f'ro_{xi:+09.2f}.png' if xi else 'ro_-00000.00.png'
     plt.imsave(os.path.join('transverse', fname), ro.T,
-               origin='lower', vmin=-0.1, vmax=0.1, cmap='bwr')
+               origin='lower', vmin=-config.pic_ro_limit, 
+               vmax=config.pic_ro_limit, cmap='bwr')
 
 
 def diagnostics(view_state, config, xi_i, Ez_00_history):
@@ -892,82 +893,23 @@ def diagnostics(view_state, config, xi_i, Ez_00_history):
 
 
 # Noise reduction #
+@numba.cuda.jit
+def trim_circle(delta, a):
+    sh = a.shape
+    for i in range(sh[0]):
+        for j in range(sh[1]):
+            if (i - sh[0]//2)**2 + (j - sh[1]//2)**2 > delta**2:
+                a[i, j] = 0.
 
 def trim_end(delta, a):
     assert a.shape[0] == a.shape[1]
-    a_k = cp.fft.fft2(a)
-    print(abs(a_k).max())
-    a_k[abs(a_k) > delta] = 0.
+
+    a_k_shifted = cp.fft.fftshift(cp.fft.fft2(a))
+    trim_circle(delta, a_k_shifted)
+    numba.cuda.synchronize()
+    a_k = cp.fft.ifftshift(a_k_shifted)
+
     return cp.fft.ifft2(a_k).real
-
-@numba.cuda.jit
-def deposit_momentum_kernel(grid_steps, grid_step_size,
-                            x_init, y_init,
-                            x_offt, y_offt,
-                            px, py, pz,
-                            out_px, out_py, out_pz):
-    k = numba.cuda.grid(1)
-    if k >= x_init.size:
-        return
-
-    x, y = x_init[k] + x_offt[k], y_init[k] + y_offt[k]
-    i, j, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM = weights(
-        x, y, grid_steps, grid_step_size
-    )
-    deposit9(out_px, i, j, px[k], wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM)
-    deposit9(out_py, i, j, py[k], wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM)
-    deposit9(out_pz, i, j, pz[k], wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM)
-
-@numba.cuda.jit
-def interp_momentum_kernel(grid_steps, grid_step_size,
-                           x_init, y_init,
-                           x_offt, y_offt,
-                           px, py, pz,
-                           out_px, out_py, out_pz):
-    k = numba.cuda.grid(1)
-    if k >= x_init.size:
-        return
-
-    # Calculate positions and momentums in them.
-    x, y = x_init[k] + x_offt[k], y_init[k] + y_offt[k]
-    i, j, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM = weights(
-        x, y, grid_steps, grid_step_size
-    )
-    out_px[k] = interp9(px, i, j, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM)
-    out_py[k] = interp9(py, i, j, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM)
-    out_pz[k] = interp9(pz, i, j, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM)
-
-def trim_end_momentum(config, x_init, y_init, x_offt, y_offt, px, py, pz):
-    px_index = cp.zeros((config.grid_steps, config.grid_steps))
-    py_index = cp.zeros((config.grid_steps, config.grid_steps))
-    pz_index = cp.zeros((config.grid_steps, config.grid_steps))
-    cfg = int(np.ceil(x_init.size / WARP_SIZE)), WARP_SIZE
-    deposit_momentum_kernel[cfg](config.grid_steps, config.grid_step_size,
-                                 x_init.ravel(), y_init.ravel(),
-                                 x_offt.ravel(), y_offt.ravel(),
-                                 px.ravel(), py.ravel(), pz.ravel(),
-                                 px_index, py_index, pz_index)
-    numba.cuda.synchronize()
-    
-    # Trimmed momentums
-    #px_tr = trim_end(config.delta, px_index)
-    #py_tr = trim_end(config.delta, py_index)
-    #pz_tr = trim_end(config.delta, pz_index)
-    px_tr = px_index
-    py_tr = py_index
-    pz_tr = pz_index
-
-    px_new = cp.zeros_like(px)
-    py_new = cp.zeros_like(py)
-    pz_new = cp.zeros_like(pz)
-    interp_momentum_kernel[cfg](config.grid_steps, config.grid_step_size,
-                                x_init.ravel(), y_init.ravel(),
-                                x_offt.ravel(), y_offt.ravel(),
-                                px_tr, py_tr, pz_tr,
-                                px_new.ravel(), py_new.ravel(), pz_new.ravel())
-    numba.cuda.synchronize()
-
-    return px_new, py_new, pz_new
 
 def noise_reduction(config, const, state):
     Ex = trim_end(config.delta, state.Ex)
@@ -980,12 +922,12 @@ def noise_reduction(config, const, state):
     x_offt = trim_end(config.delta, state.x_offt)
     y_offt = trim_end(config.delta, state.y_offt)
 
-    px, py, pz = trim_end_momentum(config, const.x_init, const.y_init,
-                                   state.x_offt, state.y_offt, 
-                                   state.px, state.py, state.pz)
-
+    px = trim_end(config.delta, state.px)
+    py = trim_end(config.delta, state.py)
+    pz = trim_end(config.delta, state.pz)
+    
     new_state = GPUArrays(x_offt=x_offt.copy(), y_offt=y_offt.copy(),
-                          px=px, py=py, pz=pz,
+                          px=px.copy(), py=py.copy(), pz=pz.copy(),
                           Ex=Ex.copy(), Ey=Ey.copy(), Ez=Ez.copy(),
                           Bx=Bx.copy(), By=By.copy(), Bz=Bz.copy(),
                           ro=state.ro, jx=state.jx, jy=state.jy, jz=state.jz)
@@ -1006,10 +948,6 @@ def main():
 
             state = step(config, const, state, beam_ro)
             
-            time_for_noise_red = xi_i % config.noise_red_each_N_steps == 0
-            if time_for_noise_red:
-                state = noise_reduction(config, const, state)
-
             view_state = GPUArraysView(state)
 
             ez = view_state.Ez[config.grid_steps // 2, config.grid_steps // 2]
@@ -1019,7 +957,10 @@ def main():
             last_step = xi_i == config.xi_steps - 1
             if time_for_diags or last_step:
                 diagnostics(view_state, config, xi_i, Ez_00_history)
-
+            
+            time_for_noise_red = xi_i % config.noise_red_each_N_steps == 0
+            if time_for_noise_red:
+                state = noise_reduction(config, const, state)
 
 if __name__ == '__main__':
     main()
