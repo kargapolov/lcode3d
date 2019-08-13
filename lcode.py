@@ -1010,8 +1010,8 @@ def diags_ro_slice(config, xi_i, xi, ro):
 
     fname = f'ro_{xi:+09.2f}.png' if xi else 'ro_-00000.00.png'
     plt.imsave(os.path.join('transverse', fname), ro.T,
-               origin='lower', vmin=-0.1, vmax=0.1, cmap='bwr')
-
+               origin='lower', vmin=-config.pic_ro_limit,
+               vmax=config.pic_ro_limit, cmap='bwr')
 
 def diagnostics(view_state, config, xi_i, Ez_00_history):
     xi = -xi_i * config.xi_step_size
@@ -1026,6 +1026,48 @@ def diagnostics(view_state, config, xi_i, Ez_00_history):
     print(f'xi={xi:+.4f} {Ez_00:+.4e}|{peak_report}|zn={max_zn:.3f}')
     sys.stdout.flush()
 
+# Noise reduction #
+
+@numba.cuda.jit
+def trim_circle(delta, a):
+    sh = a.shape
+    for i in range(sh[0]):
+        for j in range(sh[1]):
+            if (i - sh[0]//2)**2 + (j - sh[1]//2)**2 > delta**2:
+                a[i, j] = 0.
+
+def trim_end(delta, a):
+    assert a.shape[0] == a.shape[1]
+
+    a_k_shifted = cp.fft.fftshift(cp.fft.fft2(a))
+    trim_circle(delta, a_k_shifted)
+    numba.cuda.synchronize()
+    a_k = cp.fft.ifftshift(a_k_shifted)
+
+    return cp.fft.ifft2(a_k).real
+
+def noise_reduction(config, const, state):
+    Ex = trim_end(config.delta, state.Ex)
+    Ey = trim_end(config.delta, state.Ey)
+    Ez = trim_end(config.delta, state.Ez)
+    Bx = trim_end(config.delta, state.Bx)
+    By = trim_end(config.delta, state.By)
+    Bz = trim_end(config.delta, state.Bz)
+
+    x_offt = trim_end(config.delta, state.x_offt)
+    y_offt = trim_end(config.delta, state.y_offt)
+
+    px = trim_end(config.delta, state.px)
+    py = trim_end(config.delta, state.py)
+    pz = trim_end(config.delta, state.pz)
+    
+    new_state = GPUArrays(x_offt=x_offt.copy(), y_offt=y_offt.copy(),
+                          px=px.copy(), py=py.copy(), pz=pz.copy(),
+                          Ex=Ex.copy(), Ey=Ey.copy(), Ez=Ez.copy(),
+                          Bx=Bx.copy(), By=By.copy(), Bz=Bz.copy(),
+                          ro=state.ro, jx=state.jx, jy=state.jy, jz=state.jz)
+                          	                          
+    return new_state
 
 # Main loop #
 
@@ -1049,6 +1091,10 @@ def main():
             last_step = xi_i == config.xi_steps - 1
             if time_for_diags or last_step:
                 diagnostics(view_state, config, xi_i, Ez_00_history)
+
+            time_for_noise_red = xi_i % config.noise_red_each_N_steps == 0
+            if time_for_noise_red:
+                state = noise_reduction(config, const, state)
 
 
 if __name__ == '__main__':
