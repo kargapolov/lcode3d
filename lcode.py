@@ -1032,6 +1032,11 @@ def diagnostics(view_state, config, xi_i, Ez_00_history):
     max_zn = diags_ro_zn(config, ro)
     diags_ro_slice(config, xi_i, xi, ro)
 
+    with open('log.txt', 'a') as log:
+        log.write(f'xi={xi:+.4f} {Ez_00:+.4e} {peak_report} zn={max_zn:.3f}\n')
+        #TODO: optimize this string (too long)
+        #TODO: save in another file type (by function save)
+
     print(f'xi={xi:+.4f} {Ez_00:+.4e}|{peak_report}|zn={max_zn:.3f}')
     sys.stdout.flush()
 
@@ -1086,6 +1091,8 @@ def main():
 
         xs, ys, const, virt_params, state = init(config)
         Ez_00_history = []
+        
+        with open('log.txt', 'w') as _: 0
 
         for xi_i in range(config.xi_steps):
             beam_ro = config.beam(xi_i, xs, ys)
