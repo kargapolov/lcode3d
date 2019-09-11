@@ -999,11 +999,11 @@ def diags_peak_msg(Ez_00_history):
         return (f'{peak_values[-1]:0.4e} '
                 f'{rel_deviations_perc[-1]:+0.2f}%')
     else:
-        return '...'
+        return ('0.0000e+00 +0.00%')
 
 
 def diags_ro_slice(config, xi_i, xi, ro):
-    if xi_i % int(1 / config.xi_step_size):
+    if xi_i % config.diagnostic_ro_each_N_steps:
         return
     if not os.path.isdir('transverse'):
         os.mkdir('transverse')
@@ -1012,6 +1012,15 @@ def diags_ro_slice(config, xi_i, xi, ro):
     plt.imsave(os.path.join('transverse', fname), ro.T,
                origin='lower', vmin=-config.pic_ro_limit,
                vmax=config.pic_ro_limit, cmap='bwr')
+
+    if not os.path.isdir('transverse_noise'):
+        os.mkdir('transverse_noise')
+
+    fname = f'ro_{xi:+09.2f}.png' if xi else 'ro_-00000.00.png'
+    plt.imsave(os.path.join('transverse_noise', fname), ro.T,
+               origin='lower', vmin=-config.pic_ro_limit,
+               vmax=config.pic_ro_limit, cmap='bwr')
+               
 
 def diagnostics(view_state, config, xi_i, Ez_00_history):
     xi = -xi_i * config.xi_step_size
