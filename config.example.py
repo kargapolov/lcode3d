@@ -31,6 +31,9 @@ noise_red_each_N_steps = 5
 
 delta = 50.
 
+pic_Ez_start = int(2985 / xi_step_size)
+pic_Ez_end = int(3000 / xi_step_size)
+
 # Additional plasma parameters #
 
 field_solver_subtraction_trick = 1

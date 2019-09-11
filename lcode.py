@@ -1040,6 +1040,18 @@ def diagnostics(view_state, config, xi_i, Ez_00_history):
     print(f'xi={xi:+.4f} {Ez_00:+.4e}|{peak_report}|zn={max_zn:.3f}')
     sys.stdout.flush()
 
+Ez_slice_history = []
+def Ez_picture(config, ez, xi_i, last_step):
+    global Ez_slice_history
+    Ez_slice_history.append(ez)
+
+    if xi_i == config.pic_Ez_end or last_step:
+        plt.imsave('Ez_slice_history.png', np.array(Ez_slice_history).T,
+                   origin='lower', vmin=-0.073, vmax=0.073, cmap='jet')
+        Ez_slice_history = []
+        #TODO: 1. save in another file type!
+        #      2. this image is incorrect
+
 # Noise reduction #
 
 @numba.cuda.jit
@@ -1100,8 +1112,8 @@ def main():
             state = step(config, const, virt_params, state, beam_ro)
             view_state = GPUArraysView(state)
 
-            ez = view_state.Ez[config.grid_steps // 2, config.grid_steps // 2]
-            Ez_00_history.append(ez)
+            ez = view_state.Ez[config.grid_steps//2, config.grid_steps//2::5]
+            Ez_00_history.append(ez[0])
 
             time_for_diags = xi_i % config.diagnostics_each_N_steps == 0
             last_step = xi_i == config.xi_steps - 1
@@ -1112,6 +1124,9 @@ def main():
             if time_for_noise_red:
                 state = noise_reduction(config, const, state)
 
+            t = xi_i % 10 == 0 or last_step
+            if xi_i >= config.pic_Ez_start and xi_i <= config.pic_Ez_end and t:
+                Ez_picture(config, ez, xi_i, last_step)
 
 if __name__ == '__main__':
     main()
