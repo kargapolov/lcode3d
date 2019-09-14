@@ -990,11 +990,9 @@ def diags_peak_msg(Ez_00_history):
 
     if peak_indices.size:
         peak_values = Ez_00_array[peak_indices]
-        rel_deviations_perc = 100 * (peak_values / peak_values[0] - 1)
-        return (f'{peak_values[-1]:0.4e} '
-                f'{rel_deviations_perc[-1]:+0.2f}%')
+        return (f'{peak_values[-1]:0.4e}')
     else:
-        return ('0.0000e+00 +0.00%')
+        return ('0.0000e+00')
 
 
 def diags_ro_slice(config, xi_i, xi, ro):
@@ -1016,23 +1014,23 @@ def diags_ro_slice(config, xi_i, xi, ro):
                origin='lower', vmin=-config.pic_ro_limit,
                vmax=config.pic_ro_limit, cmap='bwr')
                
-
-def diagnostics(view_state, config, xi_i, Ez_00_history):
+xi_arr, peak_report, zn = [], [], []
+def diagnostics(view_state, config, xi_i, last_step, Ez_00):
+    global xi_arr, peak_report, zn
     xi = -xi_i * config.xi_step_size
 
-    Ez_00 = Ez_00_history[-1]
-    peak_report = diags_peak_msg(Ez_00_history)
+    xi_arr.append(xi)
+    peak_report.append(diags_peak_msg(Ez_00))
 
     ro = view_state.ro
-    max_zn = diags_ro_zn(config, ro)
+    zn.append(diags_ro_zn(config, ro))
+
     diags_ro_slice(config, xi_i, xi, ro)
 
-    with open('log.txt', 'a') as log:
-        log.write(f'xi={xi:+.4f} {Ez_00:+.4e} {peak_report} zn={max_zn:.3f}\n')
-        #TODO: optimize this string (too long)
-        #TODO: save in another file type (by function save)
+    if xi % 10 == 0 or last_step:
+        np.savez('log', xi=xi_arr, Ez_00=Ez_00, peak_values=peak_report, zn=zn)
 
-    print(f'xi={xi:+.4f} {Ez_00:+.4e}|{peak_report}|zn={max_zn:.3f}')
+    print(f'xi={xi:+.4f} {Ez_00[-1]:+.4e}|{peak_report[-1]}|zn={zn[-1]:.3f}')
     sys.stdout.flush()
 
 def Ez_logging(view_state, config, Ez_slice, xi_i, last_step):
@@ -1094,8 +1092,6 @@ def main():
         xs, ys, const, virt_params, state = init(config)
         Ez_00_history = []
         Ez_slice = np.array([])
-        
-        with open('log.txt', 'w') as _: 0
 
         for xi_i in range(config.xi_steps):
             beam_ro = config.beam(xi_i, xs, ys)
@@ -1103,13 +1099,13 @@ def main():
             state = step(config, const, virt_params, state, beam_ro)
             view_state = GPUArraysView(state)
 
-            ez = view_state.Ez[config.grid_steps//2, config.grid_steps//2::5]
-            Ez_00_history.append(ez[0])
+            ez = view_state.Ez[config.grid_steps//2, config.grid_steps//2]
+            Ez_00_history.append(ez)
 
             time_for_diags = xi_i % config.diagnostics_each_N_steps == 0
             last_step = xi_i == config.xi_steps - 1
             if time_for_diags or last_step:
-                diagnostics(view_state, config, xi_i, Ez_00_history)
+                diagnostics(view_state, config, xi_i, last_step, Ez_00_history)
 
             time_for_noise_red = xi_i % config.noise_red_each_N_steps == 0
             if time_for_noise_red:
