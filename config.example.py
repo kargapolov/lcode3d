@@ -8,9 +8,6 @@ grid_steps = 641; grid_step_size = .025  # 16.025
 #xi_step_size = .02
 xi_step_size = .025
 #xi_step_size = .01
-xi_step_size = .005
-#xi_step_size = .002
-#xi_step_size = .001
 xi_steps = int(3000 // xi_step_size)
 
 # Diagnostic parameters #
@@ -31,8 +28,8 @@ noise_red_each_N_steps = 5
 
 delta = 50.
 
-pic_Ez_start = int(2985 / xi_step_size)
-pic_Ez_end = int(3000 / xi_step_size)
+log_Ez_start = int(2985 / xi_step_size)
+log_Ez_end = int(3000 / xi_step_size)
 
 # Additional plasma parameters #
 

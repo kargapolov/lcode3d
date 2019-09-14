@@ -1035,17 +1035,13 @@ def diagnostics(view_state, config, xi_i, Ez_00_history):
     print(f'xi={xi:+.4f} {Ez_00:+.4e}|{peak_report}|zn={max_zn:.3f}')
     sys.stdout.flush()
 
-Ez_slice_history = []
-def Ez_picture(config, ez, xi_i, last_step):
-    global Ez_slice_history
-    Ez_slice_history.append(ez)
+def Ez_logging(view_state, config, Ez_slice, xi_i, last_step):
+    Ez_current = view_state.Ez[config.grid_steps//2, config.grid_steps//2:]
+    Ez_slice = np.concatenate((Ez_slice, Ez_current))
 
-    if xi_i == config.pic_Ez_end or last_step:
-        plt.imsave('Ez_slice_history.png', np.array(Ez_slice_history).T,
-                   origin='lower', vmin=-0.073, vmax=0.073, cmap='jet')
-        Ez_slice_history = []
-        #TODO: 1. save in another file type!
-        #      2. this image is incorrect
+    if xi_i == config.log_Ez_end or last_step:
+        np.save('Ez_slice_history', Ez_slice)
+        Ez_slice = np.array([])
 
 # Noise reduction #
 
@@ -1097,6 +1093,7 @@ def main():
 
         xs, ys, const, virt_params, state = init(config)
         Ez_00_history = []
+        Ez_slice = np.array([])
         
         with open('log.txt', 'w') as _: 0
 
@@ -1118,9 +1115,9 @@ def main():
             if time_for_noise_red:
                 state = noise_reduction(config, const, state)
 
-            t = xi_i % 10 == 0 or last_step
-            if xi_i >= config.pic_Ez_start and xi_i <= config.pic_Ez_end and t:
-                Ez_picture(config, ez, xi_i, last_step)
+            t = last_step
+            if xi_i >= config.log_Ez_start and xi_i <= config.log_Ez_end and t:
+                Ez_logging(view_state, config, Ez_slice, xi_i, last_step)
 
 if __name__ == '__main__':
     main()
