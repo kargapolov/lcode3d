@@ -990,9 +990,9 @@ def diags_peak_msg(Ez_00_history):
 
     if peak_indices.size:
         peak_values = Ez_00_array[peak_indices]
-        return (f'{peak_values[-1]:0.4e}')
+        return peak_values[-1]
     else:
-        return ('0.0000e+00')
+        return 0.
 
 
 def diags_ro_slice(config, xi_i, xi, ro):
@@ -1030,7 +1030,7 @@ def diagnostics(view_state, config, xi_i, last_step, Ez_00):
     if xi % 10 == 0 or last_step:
         np.savez('log', xi=xi_arr, Ez_00=Ez_00, peak_values=peak_report, zn=zn)
 
-    print(f'xi={xi:+.4f} {Ez_00[-1]:+.4e}|{peak_report[-1]}|zn={zn[-1]:.3f}')
+    print(f'xi={xi:+.4f} {Ez_00[-1]:+.4e}|{peak_report[-1]:0.4e}|{zn[-1]:.3f}')
     sys.stdout.flush()
 
 def Ez_logging(view_state, config, Ez_slice, xi_i, last_step):
