@@ -829,7 +829,7 @@ def move_smart(config,
 
 # The scheme of a single step in xi #
 
-def step(config, const, virt_params, prev, beam_ro):
+def step(config, xi_i, const, virt_params, prev, beam_ro):
     """
     Calculate the next iteration of plasma evolution and response.
     Returns the new state with the following attributes:
@@ -870,6 +870,10 @@ def step(config, const, virt_params, prev, beam_ro):
         Ex, Ey = 2 * Ex - prev.Ex, 2 * Ey - prev.Ey
         Bx, By = 2 * Bx - prev.Bx, 2 * By - prev.By
 
+    # Additional diagnostic
+    if xi_i % config.derivate_each_N_steps == 0:
+        derivate_logging(config, xi_i, 1, prev, beam_ro, ro_in, jx, jy, jz_in)
+
     Ez = calculate_Ez(config, jx, jy)
     Bz = calculate_Bz(config, jx, jy)
 
@@ -902,6 +906,10 @@ def step(config, const, virt_params, prev, beam_ro):
 
     Ez = calculate_Ez(config, jx, jy)
     Bz = calculate_Bz(config, jx, jy)
+
+    # Additional diagnostic
+    if xi_i % config.derivate_each_N_steps == 0:
+        derivate_logging(config, xi_i, 2, prev, beam_ro, ro_in, jx, jy, jz_in)
 
     Ex_avg = (Ex + prev.Ex) / 2
     Ey_avg = (Ey + prev.Ey) / 2
@@ -1008,8 +1016,7 @@ def diags_ro_slice(config, xi_i, xi, ro):
 
     fname = f'ro_{xi:+09.2f}.png' if xi else 'ro_-00000.00.png'
     plt.imsave(os.path.join('transverse', fname), ro.T,
-               origin='lower', vmin=-config.pic_ro_limit,
-               vmax=config.pic_ro_limit, cmap='bwr')
+               origin='lower', vmin=-0.1, vmax=0.1, cmap='bwr')
 
     if not os.path.isdir('transverse_noise'):
         os.mkdir('transverse_noise')
@@ -1035,6 +1042,18 @@ def diagnostics(view_state, config, xi_i, last_step, Ez_00):
     if xi % 10 == 0 or last_step:
         np.savez('log', xi=xi_arr, Ez_00=Ez_00, peak_values=peak_report, zn=zn)
 
+    if not os.path.isdir('plasma_log'):
+        os.mkdir('plasma_log')
+
+    fname = f'plasmafile_{xi:+09.2f}'
+    if xi % 50 == 0 or last_step:
+        np.savez(os.path.join('plasma_log', fname),
+                 x_offt=view_state.x_offt, y_offt=view_state.y_offt,
+                 px=view_state.px, py=view_state.py, pz=view_state.pz,
+                 Ex=view_state.Ex, Ey=view_state.Ey, Ez=view_state.Ez,
+                 Bx=view_state.Bx, By=view_state.By, Bz=view_state.Bz,
+                 ro=ro, jx=view_state.jx, jy=view_state.jy, jz=view_state.jz)
+
     print(f'xi={xi:+.4f} {Ez_00[-1]:+.4e}|{peak_report[-1]:0.4e}|{zn[-1]:.3f}')
     sys.stdout.flush()
 
@@ -1045,6 +1064,31 @@ def Ez_logging(view_state, config, Ez_slice, xi_i, last_step):
     if xi_i == config.log_Ez_end or last_step:
         np.save('Ez_slice_history', Ez_slice)
         Ez_slice = np.array([])
+
+# Calculation of derivatives for charge and current and saving them in file
+def derivate_logging(config, xi_i, series, prev, beam_ro, ro, jx, jy, jz):
+    xi = -xi_i * config.xi_step_size
+    if not os.path.isdir('derivate_log'):
+        os.mkdir('derivate_log')
+
+    dro_dx, dro_dy = dx_dy(ro + beam_ro, config.grid_step_size)
+
+    djx_dx, djx_dy = jx[2:, 1:-1] - jx[:-2, 1:-1], jx[1:-1, 2:] - jx[1:-1, :-2]
+    djy_dx, djy_dy = jy[2:, 1:-1] - jy[:-2, 1:-1], jy[1:-1, 2:] - jy[1:-1, :-2]
+    djx_dy = cp.pad(djx_dy, 1, 'constant', constant_values=0)
+    djy_dx = cp.pad(djy_dx, 1, 'constant', constant_values=0)
+
+    djz_dx, djz_dy = dx_dy(jz + beam_ro, config.grid_step_size)
+    djx_dxi = (prev.jx - jx) / config.xi_step_size
+    djy_dxi = (prev.jy - jy) / config.xi_step_size
+
+    fname = f'derivatefile_{xi:+09.2f}_{series}'
+    np.savez(os.path.join('derivate_log', fname),
+             dro_dx=dro_dx.get(),   dro_dy=dro_dy.get(),
+             djx_dx=djx_dx.get(),   djx_dy=djx_dy.get(),
+             djy_dx=djy_dx.get(),   djy_dy=djy_dy.get(),
+             djz_dx=djz_dx.get(),   djz_dy=djz_dy.get(),
+             djx_dxi=djx_dxi.get(), djy_dxi=djy_dxi.get())
 
 # Noise reduction #
 
@@ -1101,10 +1145,10 @@ def main():
         Ez_00_history = []
         Ez_slice = np.array([])
 
-        for xi_i in range(config.xi_steps):
+        for xi_i in range(config.xi_steps + 1):
             beam_ro = config.beam(xi_i, xs, ys)
 
-            state = step(config, const, virt_params, state, beam_ro)
+            state = step(config, xi_i, const, virt_params, state, beam_ro)
             view_state = GPUArraysView(state)
 
             ez = view_state.Ez[config.grid_steps//2, config.grid_steps//2]

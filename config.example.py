@@ -20,6 +20,8 @@ diagnostic_ro_each_N_steps = int(1 / xi_step_size)
 
 pic_ro_limit = 0.01
 
+derivate_each_N_steps = int(10 / xi_step_size)
+
 # Noise reduction parameters #
 
 #noise_red_each_N_steps = int(0.25 / xi_step_size)
