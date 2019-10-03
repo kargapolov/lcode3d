@@ -175,6 +175,7 @@ def calculate_Ez(config, jx, jy):
     #    hidden inside dirichlet_matrix.
     Ez_inner = dst2d(f)
     Ez = cp.pad(Ez_inner, 1, 'constant', constant_values=0)
+    numba.cuda.synchronize()
     return Ez
 
 
@@ -350,6 +351,7 @@ def calculate_Bz(config, jx, jy):
     #    and we take all scaling matters into account with a single factor
     #    hidden inside neumann_matrix.
     Bz = dct2d(f)
+    numba.cuda.synchronize()
 
     Bz -= Bz.mean()  # Integral over Bz must be 0.
 
@@ -379,6 +381,7 @@ def move_estimate_wo_fields(config,
 
     x_offt, y_offt = x - x_init, y - y_init
 
+    numba.cuda.synchronize()
     return x_offt, y_offt
 
 
@@ -686,6 +689,7 @@ def deposit(config, ro_initial, x_offt, y_offt, m, q, px, py, pz, virt_params):
                         ro, jx, jy, jz)
     # Also add the background ion charge density.
     ro += ro_initial  # Do it last to preserve more float precision
+    numba.cuda.synchronize()
     return ro, jx, jy, jz
 
 
@@ -819,6 +823,7 @@ def move_smart(config,
                            Ex_avg, Ey_avg, Ez_avg, Bx_avg, By_avg, Bz_avg,
                            x_offt_new.ravel(), y_offt_new.ravel(),
                            px_new.ravel(), py_new.ravel(), pz_new.ravel())
+    numba.cuda.synchronize()
     return x_offt_new, y_offt_new, px_new, py_new, pz_new
 
 
@@ -1058,7 +1063,10 @@ def trim_end(delta, a):
     trim_circle(delta, a_k_shifted)
     a_k = cp.fft.ifftshift(a_k_shifted)
 
-    return cp.fft.ifft2(a_k).real
+    a_trimmed = cp.fft.ifft2(a_k).real
+    numba.cuda.synchronize()
+
+    return a_trimmed
 
 def noise_reduction(config, const, state):
     Ex = trim_end(config.delta, state.Ex)
