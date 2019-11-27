@@ -997,6 +997,15 @@ def diags_ro_zn(config, ro):
     return max_zn
 
 
+def diags_zn(A, max_zn, grid_step_size):
+    sigma = 0.25 / grid_step_size
+    blurred = scipy.ndimage.gaussian_filter(A, sigma=sigma)
+    hf = A - blurred
+    zn = np.abs(hf).mean()
+    max_zn = max(max_zn, zn)
+    return max_zn
+
+
 def diags_peak_msg(Ez_00_history):
     Ez_00_array = np.array(Ez_00_history)
     peak_indices = scipy.signal.argrelmax(Ez_00_array)[0]
@@ -1066,29 +1075,56 @@ def Ez_logging(view_state, config, Ez_slice, xi_i, last_step):
         Ez_slice = np.array([])
 
 # Calculation of derivatives for charge and current and saving them in file
+name_list = ['dro_dx', 'dro_dy', 'djx_dx', 'djx_dy', 'djy_dx', 'djy_dy',
+             'djz_dx', 'djz_dy', 'djx_dxi', 'djy_dxi']
+der_xi_arr = []
+der_zn = {name:[0] for name in name_list}
+
 def derivate_logging(config, xi_i, series, prev, beam_ro, ro, jx, jy, jz):
+    global der_zn, der_xi_arr
     xi = -xi_i * config.xi_step_size
+    der_xi_arr.append(xi)
     if not os.path.isdir('derivate_log'):
         os.mkdir('derivate_log')
 
-    dro_dx, dro_dy = dx_dy(ro + beam_ro, config.grid_step_size)
+    der = {}
+    der['dro_dx'], der['dro_dy'] = dx_dy(ro + beam_ro, config.grid_step_size)
 
-    djx_dx, djx_dy = jx[2:, 1:-1] - jx[:-2, 1:-1], jx[1:-1, 2:] - jx[1:-1, :-2]
-    djy_dx, djy_dy = jy[2:, 1:-1] - jy[:-2, 1:-1], jy[1:-1, 2:] - jy[1:-1, :-2]
-    djx_dy = cp.pad(djx_dy, 1, 'constant', constant_values=0)
-    djy_dx = cp.pad(djy_dx, 1, 'constant', constant_values=0)
+    der['djx_dx'] = jx[2:, 1:-1] - jx[:-2, 1:-1] 
+    der['djx_dy'] = jx[1:-1, 2:] - jx[1:-1, :-2]
+    der['djy_dx'] = jy[2:, 1:-1] - jy[:-2, 1:-1]
+    der['djy_dy'] = jy[1:-1, 2:] - jy[1:-1, :-2]
+    der['djx_dy'] = cp.pad(der['djx_dy'], 1, 'constant', constant_values=0)
+    der['djy_dx'] = cp.pad(der['djy_dx'], 1, 'constant', constant_values=0)
 
-    djz_dx, djz_dy = dx_dy(jz + beam_ro, config.grid_step_size)
-    djx_dxi = (prev.jx - jx) / config.xi_step_size
-    djy_dxi = (prev.jy - jy) / config.xi_step_size
+    der['djz_dx'], der['djz_dy'] = dx_dy(jz + beam_ro, config.grid_step_size)
+    der['djx_dxi'] = (prev.jx - jx) / config.xi_step_size
+    der['djy_dxi'] = (prev.jy - jy) / config.xi_step_size
 
-    fname = f'derivatefile_{xi:+09.2f}_{series}'
-    np.savez(os.path.join('derivate_log', fname),
-             dro_dx=dro_dx.get(),   dro_dy=dro_dy.get(),
-             djx_dx=djx_dx.get(),   djx_dy=djx_dy.get(),
-             djy_dx=djy_dx.get(),   djy_dy=djy_dy.get(),
-             djz_dx=djz_dx.get(),   djz_dy=djz_dy.get(),
-             djx_dxi=djx_dxi.get(), djy_dxi=djy_dxi.get())
+    for name in name_list: 
+        der_zn[name].append(diags_zn(der[name].get(), der_zn[name][-1],
+                                     config.grid_step_size))
+
+    if xi % 10 == 0:
+        fname = f'derivatefile_{xi:+09.2f}_{series}'
+        np.savez(os.path.join('derivate_log', fname),
+                dro_dx=der['dro_dx'].get(),   dro_dy=der['dro_dy'].get(),
+                djx_dx=der['djx_dx'].get(),   djx_dy=der['djx_dy'].get(),
+                djy_dx=der['djy_dx'].get(),   djy_dy=der['djy_dy'].get(),
+                djz_dx=der['djz_dx'].get(),   djz_dy=der['djz_dy'].get(),
+                djx_dxi=der['djx_dxi'].get(), djy_dxi=der['djy_dxi'].get())
+
+    if xi % 10 == 0:
+        fname = f'charge_currents_{xi:+09.2f}_{series}'
+        np.savez(os.path.join('derivate_log', fname),      
+                ro=ro.get(), jx=jx.get(), jy=jy.get(), jz=jz.get())
+
+    np.savez('derivate_zn_log', xi=der_xi_arr,
+             dro_dx=der_zn['dro_dx'],   dro_dy=der_zn['dro_dy'],
+             djx_dx=der_zn['djx_dx'],   djx_dy=der_zn['djx_dy'],
+             djy_dx=der_zn['djy_dx'],   djy_dy=der_zn['djy_dy'],
+             djz_dx=der_zn['djz_dx'],   djz_dy=der_zn['djz_dy'],
+             djx_dxi=der_zn['djx_dxi'], djy_dxi=der_zn['djy_dxi'])
 
 # Noise reduction #
 
