@@ -1086,6 +1086,8 @@ def derivate_logging(config, xi_i, series, prev, beam_ro, ro, jx, jy, jz):
     der_xi_arr.append(xi)
     if not os.path.isdir('derivate_log'):
         os.mkdir('derivate_log')
+    if not os.path.isdir('charge_currents_log'):
+        os.mkdir('charge_currents_log')
 
     der = {}
     der['dro_dx'], der['dro_dy'] = dx_dy(ro + beam_ro, config.grid_step_size)
@@ -1116,7 +1118,7 @@ def derivate_logging(config, xi_i, series, prev, beam_ro, ro, jx, jy, jz):
 
     if xi % 10 == 0:
         fname = f'charge_currents_{xi:+09.2f}_{series}'
-        np.savez(os.path.join('derivate_log', fname),      
+        np.savez(os.path.join('charge_currents_log', fname),      
                 ro=ro.get(), jx=jx.get(), jy=jy.get(), jz=jz.get())
 
     np.savez('derivate_zn_log', xi=der_xi_arr,
@@ -1128,40 +1130,37 @@ def derivate_logging(config, xi_i, series, prev, beam_ro, ro, jx, jy, jz):
 
 # Noise reduction #
 
-@numba.cuda.jit
-def trim_circle(delta, a):
-    sh = a.shape
-    for i in range(sh[0]):
-        for j in range(sh[1]):
-            if (i - sh[0]//2)**2 + (j - sh[1]//2)**2 > delta**2:
-                a[i, j] = 0.
+def gain_func(alp, f):
+    return alp + (1. - alp) * cp.cos(f * 2. * cp.pi)
 
-def trim_end(delta, a):
-    assert a.shape[0] == a.shape[1]
+def gain_compensated(n, f):
+    return gain_func(1. / 2., f) ** n * gain_func(n / 2. + 1., f)
 
-    a_k_shifted = cp.fft.fftshift(cp.fft.fft2(a))
-    trim_circle(delta, a_k_shifted)
-    a_k = cp.fft.ifftshift(a_k_shifted)
+# Many silly actions, because some problems in cupy (?)
+def binomial_filtering(n_pass, a):
+    f    = cp.zeros((1, a.shape[0]))
+    f[0] = cp.fft.fftfreq(a.shape[0])
+    f2d  = cp.sqrt(f**2 + f.T**2) / 1.2 
+    # What 1.2 means? I don't know.
 
-    a_trimmed = cp.fft.ifft2(a_k).real
-    numba.cuda.synchronize()
-
-    return a_trimmed
+    a_k = cp.fft.fft2(a)
+    a_f = a_k * gain_compensated(n_pass, f2d)
+    return cp.fft.ifft2(a_f).real
 
 def noise_reduction(config, const, state):
-    Ex = trim_end(config.delta, state.Ex)
-    Ey = trim_end(config.delta, state.Ey)
-    Ez = trim_end(config.delta, state.Ez)
-    Bx = trim_end(config.delta, state.Bx)
-    By = trim_end(config.delta, state.By)
-    Bz = trim_end(config.delta, state.Bz)
+    Ex = binomial_filtering(config.n_pass, state.Ex)
+    Ey = binomial_filtering(config.n_pass, state.Ey)
+    Ez = binomial_filtering(config.n_pass, state.Ez)
+    Bx = binomial_filtering(config.n_pass, state.Bx)
+    By = binomial_filtering(config.n_pass, state.By)
+    Bz = binomial_filtering(config.n_pass, state.Bz)
 
-    x_offt = trim_end(config.delta, state.x_offt)
-    y_offt = trim_end(config.delta, state.y_offt)
+    x_offt = binomial_filtering(config.n_pass, state.x_offt)
+    y_offt = binomial_filtering(config.n_pass, state.y_offt)
 
-    px = trim_end(config.delta, state.px)
-    py = trim_end(config.delta, state.py)
-    pz = trim_end(config.delta, state.pz)
+    px = binomial_filtering(config.n_pass, state.px)
+    py = binomial_filtering(config.n_pass, state.py)
+    pz = binomial_filtering(config.n_pass, state.pz)
     
     new_state = GPUArrays(x_offt=x_offt.copy(), y_offt=y_offt.copy(),
                           px=px.copy(), py=py.copy(), pz=pz.copy(),
